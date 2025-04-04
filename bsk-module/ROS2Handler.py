@@ -29,10 +29,12 @@ class ROS2Handler(sysModel.SysModel):
     can complete any other computations you need (``Numpy``, ``matplotlib``, vision processing
     AI, whatever).
     """
-    def __init__(self, send_port = 5555, receive_port = 7070):
+    def __init__(self, reply_port = 8888, send_port = 5555, receive_port = 7070, timeout = 15):
         super(ROS2Handler, self).__init__()
 
         # Initialise TCP port for ZMQ socket binding:
+        self.timeout = timeout
+        self.reply_port = reply_port
         self.send_port = send_port
         self.receive_port = receive_port
         
@@ -47,13 +49,36 @@ class ROS2Handler(sysModel.SysModel):
         # Initialize ZMQ Context
         self.context = zmq.Context()
         
+        # ZMQ REP: Send Reply to ZMQ Bridge REQ port when ready
+        self.reply_socket = self.context.socket(zmq.REP)
+        self.reply_socket.bind(f"tcp://*:{self.reply_port}")
+        self.reply_socket.setsockopt(zmq.RCVTIMEO, self.timeout * 1000) # Set 15-second timeout for receiving.
+        
+        # TODO 20250401 - Maybe add while loop for ?
+        print("Waiting for ZMQ Bridge Request...")
+        
+        try:
+            request = self.reply_socket.recv_string()
+        except zmq.Again:
+            print("Error - ZMQ Bridge not Ready, exiting...")
+            self.reply_socket.close()
+            exit(0)
+            
+        if request == "Start":
+            self.reply_socket.send_string("Ready")
+            print("ROS2Handler: Sent 'Ready' response to ZMQ Bridge.")
+        else: 
+            self.reply_socket.send_string("Error")
+            self.reply_socket.close()
+            exit(0)
+        
         # ZMQ Publisher (BSK → ROS2)
         self.send_socket = self.context.socket(zmq.PUB)
         self.send_socket.setsockopt(zmq.LINGER, 0)  # Ensures the socket closes immediately
         try:
             self.send_socket.bind(f"tcp://*:{self.send_port}") # Combine port string
         except zmq.ZMQError as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Port {self.send_port} is already in use: {e}, check for available Localhost Ports and reset. \n\r Exiting Python Simulation...")
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"Port {self.send_port} is already in use: {e}, check for available Localhost Ports and reset. \n\r Exiting Python Simulation...")
             exit(0)
         
         # ZMQ Subscriber (ROS2 → BSK)
@@ -158,7 +183,7 @@ class ROS2Handler(sysModel.SysModel):
         try:
             ROS_zmq_msg = self.receive_socket.recv_string(flags=zmq.NOBLOCK)
             ROS2_raw_data_json = json.loads(ROS_zmq_msg)
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"[BSK] Received command from ROS2: {ROS2_raw_data_json}")
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Received command from ROS2: {ROS2_raw_data_json}")
         except zmq.Again:
             pass  # No message available, continue loop
         
@@ -176,9 +201,22 @@ class ROS2Handler(sysModel.SysModel):
     def __Port_Clean_Exit(self, signum=None, frame=None):
         self.running = False
         self.receive_thread.join()
+        
+        self.reply_socket.close() # Maybe can close this port right after getting reply?
         self.send_socket.close() # Close the socket properly
         self.receive_socket.close() # Close the socket properly
         self.context.term() # Terminate ZMQ context
      
         self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"ZMQ socket closed.")
 
+    def Kill_Bridge(self):
+        isKilled = False
+        while not isKilled:
+            try:
+                self.reply_socket.send_string("Kill")
+                isKilled = True
+                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Bridge Kill Signal sent to REQ-REP port.")
+                break
+            except zmq.error.ZMQError:
+                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Operation cannot be accomplished in current state, trying again")
+                pass

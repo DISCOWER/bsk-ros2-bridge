@@ -1,9 +1,19 @@
 import pytest
 import numpy as np
 import zmq, json
-from Basilisk.architecture import messaging
+import inspect, os, sys
+
+filename = inspect.getframeinfo(inspect.currentframe()).filename
+path = os.path.dirname(os.path.abspath(filename))
+sys.path.append(path + '/.././dev') # For importing scConfig
+
+from Basilisk.architecture import messaging, bskLogging
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport # general support file with common unit test functions
+from Basilisk.simulation import simSynch
 import ROS2Handler
+import zmq_to_ros_bridge
+
+import rclpy
 
 # uncomment this line is this test is to be skipped in the global unit test run, adjust message as needed
 # @pytest.mark.skipif(conditionstring)
@@ -41,6 +51,17 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
     testProc = unitTestSim.CreateNewProcess(unitProcessName)
     testProc.addTask(unitTestSim.CreateNewTask(unitTaskName, testProcessRate))
 
+    # # Instantiate ROS2Bridge for testing:
+    # rclpy.init()
+    # ROS2Bridge = zmq_to_ros_bridge.ZMQToROSBridge()
+    # ROS2Bridge.run()
+
+    ## runRealtime setting: Enslave simulation to run in Realtime by the simSync.ClockSync module function:
+    clockSync = simSynch.ClockSynch()
+    clockSync.accelFactor = 1.0
+    # clockSync.accelFactor = 50.0
+    unitTestSim.AddModelToTask(unitTaskName, clockSync) # Check if this task name is valid later...
+
     # Include test module:
     module = ROS2Handler.ROS2Handler()
     module.ModelTag = "ros2Handler"
@@ -57,7 +78,9 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
     scStateInMsg = messaging.SCStatesMsg().write(scStateInData)
     
     module.scStateInMsg.subscribeTo(scStateInMsg)
-
+    module.bskLogger = bskLogging.BSKLogger(bskLogging.BSK_DEBUG)
+    
+    """ TO REMOVE:
     cmdMsgData = {
         "time": 0.,
         "Fcmd": [0.1, 2.0, -4.0],
@@ -76,6 +99,7 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
         pass # No new messages, continue loop    
     # 2) Pub socket publish fake JSON data to ROS2Handler.receive_socket
     pub_socket.send_string(cmdMsgDataJSON) # TODO make this to publish data during the BSK sim.
+    """
     
     # Start simulation:
     unitTestSim.InitializeSimulation()
@@ -83,6 +107,9 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
     # Step the simulation to 3*process rate so 4 total steps including zero
     unitTestSim.ConfigureStopTime(macros.sec2nano(sim_time))  # seconds to stop simulation
     unitTestSim.ExecuteSimulation()
+    
+    # module.__Port_Clean_Exit()
+    # module.Kill_Bridge()
     
     # Test pass/fail conditions:
     if testFailCount == 0:
@@ -108,6 +135,6 @@ def __set_fake_bridge_send_receive_sockets(module):
     
 if __name__ == "__main__":
     test_ROS2Handler(
-        test_rate=0.1, # Set custom test rate for testing ROS2-BSK synchronization/time delay.
-        sim_time = 20. # Set custom test sim. time.
+        test_rate=1., # Set custom test rate for testing ROS2-BSK synchronization/time delay.
+        sim_time = 10. # Set custom test sim. time.
     )
