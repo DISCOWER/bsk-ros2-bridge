@@ -11,9 +11,7 @@ from Basilisk.architecture import messaging, bskLogging
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport # general support file with common unit test functions
 from Basilisk.simulation import simSynch
 import ROS2Handler
-import zmq_to_ros_bridge
 
-import rclpy
 
 # uncomment this line is this test is to be skipped in the global unit test run, adjust message as needed
 # @pytest.mark.skipif(conditionstring)
@@ -50,11 +48,6 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
     testProcessRate = macros.sec2nano(test_rate)  # update process rate update time
     testProc = unitTestSim.CreateNewProcess(unitProcessName)
     testProc.addTask(unitTestSim.CreateNewTask(unitTaskName, testProcessRate))
-
-    # # Instantiate ROS2Bridge for testing:
-    # rclpy.init()
-    # ROS2Bridge = zmq_to_ros_bridge.ZMQToROSBridge()
-    # ROS2Bridge.run()
 
     ## runRealtime setting: Enslave simulation to run in Realtime by the simSync.ClockSync module function:
     clockSync = simSynch.ClockSynch()
@@ -108,8 +101,9 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
     unitTestSim.ConfigureStopTime(macros.sec2nano(sim_time))  # seconds to stop simulation
     unitTestSim.ExecuteSimulation()
     
-    # module.__Port_Clean_Exit()
-    # module.Kill_Bridge()
+    # TODO - Kill bridge messsage send to REQ port to kill ZMQ Bridge
+    # if(unitTestSim.simulationFinished):
+    module.Kill_Bridge_Send()
     
     # Test pass/fail conditions:
     if testFailCount == 0:
@@ -135,6 +129,6 @@ def __set_fake_bridge_send_receive_sockets(module):
     
 if __name__ == "__main__":
     test_ROS2Handler(
-        test_rate=1., # Set custom test rate for testing ROS2-BSK synchronization/time delay.
+        test_rate=.1, # Set custom test rate for testing ROS2-BSK synchronization/time delay.
         sim_time = 10. # Set custom test sim. time.
     )

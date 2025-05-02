@@ -1,12 +1,13 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PoseStamped
 import numpy as np
 
 class BasiliskDataProcessor(Node):
     def __init__(self):
         super().__init__("bsk_data_processor")
-        self.subscription = self.create_subscription(Point, "basilisk_data", self.callback, 10)
+        self.subscription = self.create_subscription(PoseStamped, "basilisk_data", self.callback, 10)
+        # self.subscription = self.create_subscription(Point, "basilisk_data", self.callback, 10)
         self.publication = self.create_publisher(Point, "ros_to_basilisk", 10)
         self.get_logger().info("Initiated `BasiliskDataProcessor()`. Start listening and publishing ROS2 Messages...")
 
