@@ -3,7 +3,8 @@ from Basilisk.utilities import orbitalMotion, unitTestSupport as UAT, RigidBodyK
 
 import zmq, json, time, numpy as np, signal
 import threading
-
+global delay_count
+delay_count = 0
 
 # See https://hanspeterschaub.info/basilisk/Learn/makingModules/pyModules.html for Python Module creation original example.
 class ROS2Handler(sysModel.SysModel):
@@ -78,11 +79,6 @@ class ROS2Handler(sysModel.SysModel):
         # self.reply_socket.setsockopt(zmq.RCVTIMEO, -1) # set REP socket to infinite wait time
         self.reply_socket.close()
         
-        # Kill request port:
-        self.kill_req_socket = self.context.socket(zmq.REQ)
-        self.kill_req_socket.connect(f"tcp://localhost:{self.kill_request_port}")
-        self.kill_req_socket.setsockopt(zmq.RCVTIMEO, -1)  # 15-second timeout, convert sec to ms
-        
         # ZMQ Publisher (BSK → ROS2)
         self.send_socket = self.context.socket(zmq.PUB)
         self.send_socket.setsockopt(zmq.LINGER, 0)  # Ensures the socket closes immediately
@@ -98,14 +94,24 @@ class ROS2Handler(sysModel.SysModel):
         self.receive_socket.setsockopt_string(zmq.SUBSCRIBE, '')
         self.receive_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep the latest message, TODO check if this will be problematic!
 
-        # Start ZMQ Threads
-        self.running = True
-        self.receive_thread = threading.Thread(target=self.__ZMQ_Force_Torque_Listener, daemon=True)
-        self.receive_thread.start()
-        
         # Register signal handlers for Ctrl+C (SIGINT) and Ctrl+Z (SIGTSTP)
         signal.signal(signal.SIGINT, lambda s, f: self.Port_Clean_Exit(s, f))   # Handle Ctrl+C, bind with `lambda` function to skip `self` instance.
         signal.signal(signal.SIGTSTP, lambda s, f: self.Port_Clean_Exit(s, f))  # Handle Ctrl+Z, bind with `lambda` function to skip `self` instance.
+        
+        # Kill request port:
+        self.kill_req_socket = self.context.socket(zmq.REQ)
+        self.kill_req_socket.connect(f"tcp://localhost:{self.kill_request_port}")
+        self.kill_req_socket.setsockopt(zmq.RCVTIMEO, -1)  # 15-second timeout, convert sec to ms
+        
+        # Wait for ? seconds so that ZMQ Bridge is ready:
+        sleep_time = 5
+        print(f"Wait for {sleep_time} seconds to sync with ZMQ Bridge...")
+        time.sleep(5)
+        
+        # Start ZMQ Listener Thread for TCP subscription:
+        self.running = True
+        self.receive_thread = threading.Thread(target=self.__ZMQ_Force_Torque_Listener, daemon=True)
+        self.receive_thread.start()
         
     def Reset(self, CurrentSimNanos):
          # 1) Message subscription check -> throw BSK log error if not linked;
@@ -190,21 +196,28 @@ class ROS2Handler(sysModel.SysModel):
     def __ZMQ_Force_Torque_Listener(self):
         """ Listens for incoming ZMQ messages from ROS2 and processes them. """
         # while self.running:
-        ROS2_raw_data_json = None
+        ROS_zmq_msg = None
+        # while ROS_zmq_msg is None:
         try:
+            # ROS_zmq_msg = self.receive_socket.recv_string(flags=0)
             ROS_zmq_msg = self.receive_socket.recv_string(flags=zmq.NOBLOCK)
-            ROS2_raw_data_json = json.loads(ROS_zmq_msg)
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Received command from ROS2: {ROS2_raw_data_json}")
         except zmq.Again:
             pass  # No message available, continue loop
         
-        if ROS2_raw_data_json:
-            # Unpack ROS2 json:
-            FrCmd = ROS2_raw_data_json["FrCmd"] # .tolist()
-            lrCmd = ROS2_raw_data_json["lrCmd"] # .tolist()
+        if ROS_zmq_msg:
+        
+            ROS2_raw_data_json = json.loads(ROS_zmq_msg)
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Received command from ROS2: {ROS2_raw_data_json}")
+            
+            # Unpack ROS2 json (TODO - Support dynamic JSON input of the key pair to be read from TCP!):
+            FrCmd = ROS2_raw_data_json["ros_to_bsk_F"]
+            lrCmd = ROS2_raw_data_json["ros_to_bsk_L"] 
         else: 
             FrCmd = [0,0,0] # Temporary
             lrCmd = [0,0,0] # Temporary
+            print(f"ROS2 Controller side is not ready... sending empty force/torque commands for now...")
+            global delay_count
+            delay_count += 1
             
         return FrCmd, lrCmd
     
@@ -223,6 +236,8 @@ class ROS2Handler(sysModel.SysModel):
         self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"ZMQ socket closed.")
 
     def Kill_Bridge_Send(self):
+        global delay_count
+        print(f'Delayed count for actuation messages: {delay_count}')
         isKilled = False
         while not isKilled:
             try:

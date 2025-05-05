@@ -1,13 +1,30 @@
 import rclpy
+# from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion, Twist, Vector3
 from std_msgs.msg import Header
+from px4_msgs.msg import VehicleThrustSetpoint, VehicleTorqueSetpoint
 from builtin_interfaces.msg import Time
 import zmq
 import json, time, threading, signal, sys
 
+namespace_prefix = '' # hardcoded for now
+ros2_force_topic_name = "ros_to_bsk_F"
+ros2_torque_topic_name = "ros_to_bsk_L"
+# ros2_force_topic_name = f'{namespace_prefix}/fmu/in/vehicle_thrust_setpoint' # reserved
+# ros2_torque_topic_name = f'{namespace_prefix}/fmu/in/vehicle_torque_setpoint' # reserved
+ros_topics = {ros2_force_topic_name: {"data": None,
+                            "type": VehicleThrustSetpoint},
+              ros2_torque_topic_name: {"data": None,
+                            "type": VehicleTorqueSetpoint},
+            #   "rosTopic3": {"data": None,
+                            # "type": "msg_type3"}
+              } # Propagate ROS2 topics to be published if needed 
+
 class ZMQToROSBridge(Node):
-    def __init__(self, request_port = 8888, kill_reply_port = 9999, subscriber_port = 5555, publisher_port = 7070, timeout = 15): # bridege timeout [sec]
+    def __init__(self, request_port = 8888, kill_reply_port = 9999, subscriber_port = 5555, publisher_port = 7070, timeout = 15,
+                 ros_topics = ros_topics
+                 ): # bridege timeout [sec]
         super().__init__("zmq_to_ros_bridge")
 
         self.timeout = timeout
@@ -16,12 +33,24 @@ class ZMQToROSBridge(Node):
         # self.ROS2Publisher = self.create_publisher(Point, "basilisk_data", 10)
 
         # ROS2 Subscriber (ROS2 → Basilisk)
-        self.ROS2Subscription = self.create_subscription(
-            Point,
-            "ros_to_basilisk",
-            self.ros_to_zmq,
-            10
-        )
+        # self.ROS2Subscription_Force = self.create_subscription(
+        #     VehicleThrustSetpoint,
+        #     ros2_force_topic_name,
+        #     self.recv_force_topic,
+        #     10
+        # )
+        # self.ROS2Subscription_Torque = self.create_subscription(
+        #     VehicleTorqueSetpoint,
+        #     ros2_torque_topic_name,
+        #     self.recv_torque_topic,
+        #     10
+        # )
+        ''' Create subsciptions from the list of ROS2 Topics:'''
+        self.ros_topics = ros_topics
+        self.subscribe_topics()
+        
+        self.force_data = None
+        self.torque_data = None
 
         self.request_port = request_port
         self.kill_reply_port = kill_reply_port
@@ -39,7 +68,7 @@ class ZMQToROSBridge(Node):
         # ZMQ Setup
         self.setup_zmq()
         self.get_logger().info(f"ZMQ To ROS2 Bridge started.")
-
+    
     def setup_zmq(self):
         # ZMQ setup (can be called after initializing the ROS2 node)
         global context
@@ -70,15 +99,8 @@ class ZMQToROSBridge(Node):
         # Reconfigure REP socket for NO timeout:
         # self.req_socket.setsockopt(zmq.RCVTIMEO, -1) # set REP socket to infinite wait time
         
-        # Kill REP message lister port thread
-        self.kill_reply_socket = context.socket(zmq.REP)
-        self.kill_reply_socket.bind(f"tcp://*:{self.kill_reply_port}")
-        self.kill_reply_socket.setsockopt(zmq.RCVTIMEO, -1) # Set 15-second timeout for receiving.
         
-        self.kill_thread = threading.Thread(target=self.recv_kill_message, daemon=True)
-        self.kill_thread.start()
-        
-        # ZMQ Subscriber (Receiving from Basilisk)
+        # ZMQ Subscriber (Receiving from Basilisk) -> Must be started before ZMQ Listener thread.
         self.sub_socket = context.socket(zmq.SUB)
         self.sub_socket.connect(f"tcp://localhost:{self.subscriber_port}")  # Adjust as needed
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
@@ -86,15 +108,23 @@ class ZMQToROSBridge(Node):
         # self.sub_socket.setsockopt(zmq.RCVTIMEO, 5000) # Set 5-second timeout for receiving.
         # self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)  # Timeout to prevent blocking forever
         
-        # ZMQ Publisher (Sending back to Basilisk)
-        self.pub_socket = context.socket(zmq.PUB)
-        self.pub_socket.bind(f"tcp://*:{self.publisher_port}")  # Adjust as needed
-        
         # Start ZMQ listener thread
         self.stop_thread_event = threading.Event()
         self.thread = threading.Thread(target=self.zmq_listener, daemon=True)
         self.thread.start()
         # self.running = True
+        
+        # ZMQ Publisher (Sending back to Basilisk)
+        self.pub_socket = context.socket(zmq.PUB)
+        self.pub_socket.bind(f"tcp://*:{self.publisher_port}")  # Adjust as needed
+        
+        # Kill REP message lister port thread
+        self.kill_reply_socket = context.socket(zmq.REP)
+        self.kill_reply_socket.bind(f"tcp://*:{self.kill_reply_port}")
+        self.kill_reply_socket.setsockopt(zmq.RCVTIMEO, -1) # Set 15-second timeout for receiving.
+        
+        self.kill_thread = threading.Thread(target=self.recv_kill_message, daemon=True)
+        self.kill_thread.start()
         
     def zmq_listener(self):
         """Receives ZMQ messages from `ROS2Handler()` BSK Module from Basilisk and publishes them as ROS2 messages."""
@@ -119,11 +149,6 @@ class ZMQToROSBridge(Node):
                 
 
     def __Convert_to_ROS2_msg(self, json_msg_data):
-        # ros_msg = Point(
-        #             x=json_msg_data["attitude"][0], 
-        #             y=json_msg_data["attitude"][1], 
-        #             z=json_msg_data["attitude"][2]
-        #         )
         # TODO - Define another ROS2 msg type to replace `Point()`!
         # TODO - Should be a combination of `PoseStamped()`, `Twist()`, with a timestamp.
         ros_msg = PoseStamped(
@@ -161,21 +186,47 @@ class ZMQToROSBridge(Node):
         
         return ros_msg
 
-    def ros_to_zmq(self, msg):
-        """Receives ROS2 messages and sends them back to Basilisk via ZMQ."""
-        msg_data = {
-            "FrCmd": [msg.x, msg.y, msg.z], # fake force using Point() ROS2 message
-            "lrCmd": [msg.x, msg.y, msg.z] # fake force using Point() ROS2 message
-        }
-        # TODO - define/reuse another ROS2 message type for command force & torque!
-        # msg_data = {
-        #     "FrCmd": [msg.Fx, msg.Fy, msg.Fz],
-        #     "lrCmd": [msg.Lx, msg.Ly, msg.Lz]
-        # }
-        json_msg = json.dumps(msg_data)
+    # Subscribe to multiple defined topics according to user defined `self.ros_topics` JSON/dict.
+    def subscribe_topics(self):
+        for topic_key in self.ros_topics.keys():
+            self.create_subscription(
+                msg_type=self.ros_topics[topic_key]["type"],
+                topic=topic_key,
+                callback=lambda msg, topic_key=topic_key: self.common_subscription_callback(msg, topic_key),
+                qos_profile=10
+            )
+            # Original:
+            # rospy.Subscriber(name=key,
+            #          data_class=self.ros_topics[key]["type"],
+            #          callback=self.common_callback,
+            #          callback_args=key)
+    
+    def common_subscription_callback(self, msg, topic_key):
+        self.ros_topics[topic_key]["data"] = msg
+        self.ros_to_zmq()
+    
+    # TODO - support changes to wait for both messages and combine...
+    def ros_to_zmq(self):
+        # Check that all data entries per topic are not None type before sending:
+        isDataSynced = all(topic["data"] is not None for topic in self.ros_topics.values())
+        # isDataSynced = (
+        #     all(value["data"] is not None for value in ros_topics.values()) and
+        #     len({value["data"].timestamp for value in ros_topics.values()}) == 1
+        # )
         
-        self.pub_socket.send_string(json_msg)
-        self.get_logger().info(f"Sent to Basilisk via ZMQ: {json_msg}")
+        if isDataSynced:         
+            print("Printing timestamps to check if data are fairly synchronised: ", {value["data"].timestamp for value in ros_topics.values()})
+            
+            # TODO - define/reuse another ROS2 message type for command force & torque!
+            flattened_ros_topics = {key: (value["data"].xyz).tolist() for key, value in self.ros_topics.items()}
+            json_msg = json.dumps(flattened_ros_topics)
+            
+            self.pub_socket.send_string(json_msg)
+            self.get_logger().info(f"Sent to Basilisk via ZMQ: {json_msg}")
+            
+            # Clear all subscription data by setting to `None` for type checking:
+            for key in self.ros_topics.keys():
+                self.ros_topics[key]["data"] = None
 
     def clean_exit(self, signum=None, frame=None):
         self.get_logger().info("Shutting down bridge...")
