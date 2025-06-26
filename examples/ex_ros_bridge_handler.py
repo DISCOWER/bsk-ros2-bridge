@@ -5,12 +5,13 @@ import inspect, os, sys
 
 filename = inspect.getframeinfo(inspect.currentframe()).filename
 path = os.path.dirname(os.path.abspath(filename))
-sys.path.append(path + '/.././dev') # For importing scConfig
+# Add the parent directory to the path to access bsk_module
+sys.path.append(os.path.join(path, '..'))
 
 from Basilisk.architecture import messaging, bskLogging
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport # general support file with common unit test functions
 from Basilisk.simulation import simSynch
-import ROS2Handler
+from bsk_module.ros_bridge_handler import RosBridgeHandler
 
 
 # uncomment this line is this test is to be skipped in the global unit test run, adjust message as needed
@@ -19,16 +20,16 @@ import ROS2Handler
 # @pytest.mark.xfail() # need to update how the RW states are defined
 # provide a unique test method name, starting with test_
 
-@pytest.mark.parametrize("function", ["test_ROS2Handler"
+@pytest.mark.parametrize("function", ["test_RosBridgeHandler"
                                     #   , "extForceInertialAndTorque"
                                       ])
 
-def test_ROS2HandlerAllTest(function):
+def test_RosBridgeHandlerAllTest(function):
     """Module Unit Test"""
     [testResults, testMessage] = eval(function + '()')
     assert testResults < 1, testMessage
     
-def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
+def test_RosBridgeHandler(test_rate = 0.1, sim_time = 20.):
     """Module Unit Test"""
     # The __tracebackhide__ setting influences pytest showing of tracebacks:
     # the mrp_steering_tracking() function will not be shown unless the
@@ -55,9 +56,9 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
     # clockSync.accelFactor = 50.0
     unitTestSim.AddModelToTask(unitTaskName, clockSync) # Check if this task name is valid later...
 
-    # Include test module:
-    module = ROS2Handler.ROS2Handler()
-    module.ModelTag = "ros2Handler"
+    # Include test module with namespace:
+    module = RosBridgeHandler(namespace="test_sat1")
+    module.ModelTag = "ros_bridge_handler"
 
     # Add test module to runtime call list
     unitTestSim.AddModelToTask(unitTaskName, module)
@@ -84,13 +85,13 @@ def test_ROS2Handler(test_rate = 0.1, sim_time = 20.):
 
     # TODO modify in test
     context, sub_socket, pub_socket = __set_fake_bridge_send_receive_sockets(module)
-    # 1) Sub socket listens to ROS2Handler.send_socket for fake JSON data
+    # 1) Sub socket listens to RosBridgeHandler.send_socket for fake JSON data
     try: 
         sub_socket.recv_string(flags=zmq.NOBLOCK)
     except zmq.Again:
         # time.sleep(0.1)  # Avoid busy-waiting
         pass # No new messages, continue loop    
-    # 2) Pub socket publish fake JSON data to ROS2Handler.receive_socket
+    # 2) Pub socket publish fake JSON data to RosBridgeHandler.receive_socket
     pub_socket.send_string(cmdMsgDataJSON) # TODO make this to publish data during the BSK sim.
     """
     
@@ -128,7 +129,7 @@ def __set_fake_bridge_send_receive_sockets(module):
     return context, sub_socket, pub_socket   
     
 if __name__ == "__main__":
-    test_ROS2Handler(
-        test_rate=.1, # Set custom test rate for testing ROS2-BSK synchronization/time delay.
-        sim_time = 10. # Set custom test sim. time.
+    test_RosBridgeHandler(
+        test_rate = 1/500, # Set custom test rate for testing ROS2-BSK synchronization/time delay.
+        sim_time = 300. # Set custom test sim. time.
     )

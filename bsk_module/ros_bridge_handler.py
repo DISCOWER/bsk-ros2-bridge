@@ -1,13 +1,13 @@
 from Basilisk.architecture import sysModel, messaging
 from Basilisk.utilities import orbitalMotion, unitTestSupport as UAT, RigidBodyKinematics as RBK # Import for Hill-frame conversion & control if necessary
 
-import zmq, json, time, numpy as np, signal
+import zmq, json, time
 import threading
 global delay_count
 delay_count = 0
 
 # See https://hanspeterschaub.info/basilisk/Learn/makingModules/pyModules.html for Python Module creation original example.
-class ROS2Handler(sysModel.SysModel):
+class RosBridgeHandler(sysModel.SysModel):
     """
     This class inherits from the `SysModel` available in the ``Basilisk.architecture.sysModel`` module.
     The `SysModel` is the parent class which your Python BSK modules must inherit.
@@ -24,21 +24,24 @@ class ROS2Handler(sysModel.SysModel):
 
     .. code-block:: python
 
-        super(ROS2Handler, self).__init__()
+        super(RosBridgeHandler, self).__init__()
 
     You class must implement the above four functions. Beyond these four functions you class
     can complete any other computations you need (``Numpy``, ``matplotlib``, vision processing
     AI, whatever).
     """
-    def __init__(self, reply_port = 8888, kill_request_port = 9999, send_port = 5555, receive_port = 7070, timeout = 15):
-        super(ROS2Handler, self).__init__()
+    def __init__(self, namespace="spacecraft1", kill_request_port = 9999, send_port = 5555, receive_port = 7070, heartbeat_port=9997, timeout = 15):
+        super(RosBridgeHandler, self).__init__()
+
+        # Spacecraft namespace for topic routing
+        self.namespace = namespace
 
         # Initialise TCP port for ZMQ socket binding:
         self.timeout = timeout
-        self.reply_port = reply_port
         self.kill_request_port = kill_request_port
         self.send_port = send_port
         self.receive_port = receive_port
+        self.heartbeat_port = heartbeat_port
         
         # INPUT MSG:
         self.scStateInMsg = messaging.SCStatesMsgReader() # For all S/C states.
@@ -48,38 +51,34 @@ class ROS2Handler(sysModel.SysModel):
         self.cmdForceOutMsg = messaging.CmdForceBodyMsg() # 
         self.cmdTorqueOutMsg = messaging.CmdTorqueBodyMsg()
         
+        # Initialize instance variables for efficiency
+        self.last_publish_time = 0
+        self.publish_interval = 0.01  # Publish at 100 Hz max
+        self.last_force_cmd = [0, 0, 0]
+        self.last_torque_cmd = [0, 0, 0]
+        
         # Initialize ZMQ Context
         self.context = zmq.Context()
-        
-        # ZMQ REP: Send Reply to ZMQ Bridge REQ port when ready
-        self.reply_socket = self.context.socket(zmq.REP)
-        self.reply_socket.bind(f"tcp://*:{self.reply_port}")
-        self.reply_socket.setsockopt(zmq.RCVTIMEO, self.timeout * 1000) # Set 15-second timeout for receiving.
-        
-        # TODO 20250401 - Maybe add while loop for ?
-        print("Waiting for ZMQ Bridge Request...")
-        
-        try:
-            request = self.reply_socket.recv_string()
-        except zmq.Again:
-            print("Error - ZMQ Bridge not Ready, exiting...")
-            self.reply_socket.close()
-            exit(0)
-            
-        # Received `request` and check for handshaking:
-        if request == "Start":
-            self.reply_socket.send_string("Ready")
-            print("ROS2Handler: Sent 'Ready' response to ZMQ Bridge.")
-        else: 
-            self.reply_socket.send_string("Error")
-            self.reply_socket.close()
-            exit(0)
-        
-        # Reconfigure REP socket for NO timeout:
-        # self.reply_socket.setsockopt(zmq.RCVTIMEO, -1) # set REP socket to infinite wait time
-        self.reply_socket.close()
-        
-        # ZMQ Publisher (BSK → ROS2)
+
+        # --- Heartbeat monitoring from bridge ---
+        self.heartbeat_sub = self.context.socket(zmq.SUB)
+        self.heartbeat_sub.connect(f"tcp://localhost:{self.heartbeat_port}")
+        self.heartbeat_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+
+        self.last_heartbeat_time = None
+        self._running = True
+        self._heartbeat_was_lost = False
+
+        def heartbeat_monitor():
+            while self._running:
+                try:
+                    msg = self.heartbeat_sub.recv_string(flags=zmq.NOBLOCK)
+                    self.last_heartbeat_time = time.time()
+                except zmq.Again:
+                    time.sleep(0.01)
+        threading.Thread(target=heartbeat_monitor, daemon=True).start()
+
+        # --- ZMQ Publisher (BSK → ROS2) ---
         self.send_socket = self.context.socket(zmq.PUB)
         self.send_socket.setsockopt(zmq.LINGER, 0)  # Ensures the socket closes immediately
         try:
@@ -87,38 +86,30 @@ class ROS2Handler(sysModel.SysModel):
         except zmq.ZMQError as e:
             self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"Port {self.send_port} is already in use: {e}, check for available Localhost Ports and reset. \n\r Exiting Python Simulation...")
             exit(0)
-        
-        # ZMQ Subscriber (ROS2 → BSK)
+
+        # --- ZMQ Subscriber (ROS2 → BSK) ---
         self.receive_socket = self.context.socket(zmq.SUB)
         self.receive_socket.connect(f"tcp://localhost:{self.receive_port}")  # ROS2 will publish here
         self.receive_socket.setsockopt_string(zmq.SUBSCRIBE, '')
         self.receive_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep the latest message, TODO check if this will be problematic!
 
-        # Register signal handlers for Ctrl+C (SIGINT) and Ctrl+Z (SIGTSTP)
-        signal.signal(signal.SIGINT, lambda s, f: self.Port_Clean_Exit(s, f))   # Handle Ctrl+C, bind with `lambda` function to skip `self` instance.
-        signal.signal(signal.SIGTSTP, lambda s, f: self.Port_Clean_Exit(s, f))  # Handle Ctrl+Z, bind with `lambda` function to skip `self` instance.
-        
-        # Kill request port:
+        # --- Kill request port ---
         self.kill_req_socket = self.context.socket(zmq.REQ)
         self.kill_req_socket.connect(f"tcp://localhost:{self.kill_request_port}")
-        self.kill_req_socket.setsockopt(zmq.RCVTIMEO, -1)  # 15-second timeout, convert sec to ms
-        
-        # Wait for ? seconds so that ZMQ Bridge is ready:
-        sleep_time = 5
-        print(f"Wait for {sleep_time} seconds to sync with ZMQ Bridge...")
-        time.sleep(5)
-        
-        # Start ZMQ Listener Thread for TCP subscription:
-        self.running = True
-        self.receive_thread = threading.Thread(target=self.__ZMQ_Force_Torque_Listener, daemon=True)
-        self.receive_thread.start()
+        self.kill_req_socket.setsockopt(zmq.RCVTIMEO, -1)  # -1 means wait forever
+
+        # --- Wait for the first heartbeat before starting! ---
+        print("Waiting for bridge heartbeat...")
+        while self.last_heartbeat_time is None:
+            time.sleep(0.01)
+        print("Bridge heartbeat detected. Starting module.")
         
     def Reset(self, CurrentSimNanos):
          # 1) Message subscription check -> throw BSK log error if not linked;
         if not self.scStateInMsg.isLinked():
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error: ROS2Handler.scStateInMsg wasn't connected.")
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error: RosBridgeHandler.scStateInMsg wasn't connected.")
         # if not self.vehConfigInMsg.isLinked():
-        #     self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error: ROS2Handler.vehConfigInMsg wasn't connected.")
+        #     self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error: RosBridgeHandler.vehConfigInMsg wasn't connected.")
         """
         The Reset method is used to clear out any persistent variables that need to get changed
         when a task is restarted.  This method is typically only called once after selfInit/crossInit,
@@ -139,6 +130,17 @@ class ROS2Handler(sysModel.SysModel):
         :param CurrentSimNanos: current simulation time in nano-seconds
         :return: none
         """
+        now = time.time()
+        if self.last_heartbeat_time is None or (now - self.last_heartbeat_time > 1.0):
+            if not self._heartbeat_was_lost:
+                print("No bridge heartbeat for >1s! Pausing UpdateState.")
+                self._heartbeat_was_lost = True
+            return
+        else:
+            if self._heartbeat_was_lost:
+                print("Bridge heartbeat restored. Resuming UpdateState.")
+                self._heartbeat_was_lost = False
+
         # read input message
         scStateInMsgBuffer = self.scStateInMsg()
         # vehConfigMsgBuffer = self.vehConfigInMsg()
@@ -153,40 +155,44 @@ class ROS2Handler(sysModel.SysModel):
         #### ROS2 -> BSK MSG:
         FrCmd, lrCmd = self.__ZMQ_Force_Torque_Listener()
         
-        forceOutMsgBuffer.forceRequestBody = FrCmd # MIND if a NEGATIVE sign is needed when using the module!!!
-        self.cmdForceOutMsg.write(forceOutMsgBuffer, CurrentSimNanos, self.moduleID)
+        # Only update if commands changed
+        if FrCmd != self.last_force_cmd:
+            forceOutMsgBuffer.forceRequestBody = FrCmd
+            self.cmdForceOutMsg.write(forceOutMsgBuffer, CurrentSimNanos, self.moduleID)
+            self.last_force_cmd = FrCmd.copy() if isinstance(FrCmd, list) else FrCmd
         
-        torqueOutMsgBuffer.torqueRequestBody = lrCmd # MIND if a NEGATIVE sign is needed when using the module!!!
-        self.cmdTorqueOutMsg.write(torqueOutMsgBuffer, CurrentSimNanos, self.moduleID)
+        if lrCmd != self.last_torque_cmd:
+            torqueOutMsgBuffer.torqueRequestBody = lrCmd
+            self.cmdTorqueOutMsg.write(torqueOutMsgBuffer, CurrentSimNanos, self.moduleID)
+            self.last_torque_cmd = lrCmd.copy() if isinstance(lrCmd, list) else lrCmd
 
         # All Python SysModels have self.bskLogger available
         # The logger level flags (i.e. BSK_INFORMATION) may be
         # accessed from sysModel
-        if True:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"------ ROS2Handler Module ------")
-            """Sample Python module method"""
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"Time: {CurrentSimNanos * 1.0E-9} s")
-            
-            # TODO
-            # self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"BSK-to-ROS2 converted message: {self.cmdForceOutMsg.read().forceRequestBody}")
-            
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"Written Msg - ForceRequestBody: {self.cmdForceOutMsg.read().forceRequestBody}")
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"Written Msg - TorqueRequestBody: {self.cmdTorqueOutMsg.read().torqueRequestBody}")
+        # Only log occasionally to avoid performance impact
+        if CurrentSimNanos % int(1e9) == 0:  # Log once per second
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"------ RosBridgeHandler Module ------")
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Time: {CurrentSimNanos * 1.0E-9} s")
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Written Msg - ForceRequestBody: {FrCmd}")
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Written Msg - TorqueRequestBody: {lrCmd}")
             
         return
     
     def __ZMQ_SCState_Publisher(self, CurrentSimNanos, scStateInMsgBuffer):
         # scStateInMsgBuffer.sigma_BN
         BSKMsg = {
+                "namespace": self.namespace,
+                "topic": "/state",
                 "time": CurrentSimNanos * 1.0E-9,
                 "position": scStateInMsgBuffer.r_BN_N, # To check if we need `tolist()`!
                 "velocity": scStateInMsgBuffer.v_BN_N,
                 "attitude": RBK.MRP2EP(scStateInMsgBuffer.sigma_BN).tolist(), # convert MRP to Quaternions.
-                "omega": scStateInMsgBuffer.omega_BN_B,
+                "angular_velocity": scStateInMsgBuffer.omega_BN_B,
+                "frame_id": "map"
         }
         try:
             self.send_socket.send_string(json.dumps(BSKMsg))
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"Published: {BSKMsg}")
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Published: {BSKMsg}")
 
         except Exception as e:
             self.bskLogger.bskLog(sysModel.BSK_ERROR, f"BSK-To-ROS2 Publishing Error: {e}")
@@ -195,44 +201,39 @@ class ROS2Handler(sysModel.SysModel):
     
     def __ZMQ_Force_Torque_Listener(self):
         """ Listens for incoming ZMQ messages from ROS2 and processes them. """
-        # while self.running:
-        ROS_zmq_msg = None
-        # while ROS_zmq_msg is None:
         try:
-            # ROS_zmq_msg = self.receive_socket.recv_string(flags=0)
             ROS_zmq_msg = self.receive_socket.recv_string(flags=zmq.NOBLOCK)
-        except zmq.Again:
-            pass  # No message available, continue loop
-        
-        if ROS_zmq_msg:
-        
             ROS2_raw_data_json = json.loads(ROS_zmq_msg)
             self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Received command from ROS2: {ROS2_raw_data_json}")
             
-            # Unpack ROS2 json (TODO - Support dynamic JSON input of the key pair to be read from TCP!):
-            FrCmd = ROS2_raw_data_json["ros_to_bsk_F"]
-            lrCmd = ROS2_raw_data_json["ros_to_bsk_L"] 
-        else: 
-            FrCmd = [0,0,0] # Temporary
-            lrCmd = [0,0,0] # Temporary
-            print(f"ROS2 Controller side is not ready... sending empty force/torque commands for now...")
-            global delay_count
-            delay_count += 1
+            # Unpack ROS2 json - now using combined wrench format:
+            FrCmd = ROS2_raw_data_json["force"]
+            lrCmd = ROS2_raw_data_json["torque"]
             
-        return FrCmd, lrCmd
+            # Reset delay count on successful receive
+            global delay_count
+            if delay_count > 0:
+                delay_count = 0
+                
+            return FrCmd, lrCmd
+            
+        except zmq.Again:
+            # No message available, return last known commands
+            return self.last_force_cmd, self.last_torque_cmd
+        except (json.JSONDecodeError, KeyError) as e:
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error parsing ROS2 message: {e}")
+            return [0, 0, 0], [0, 0, 0]
+        except Exception as e:
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Unexpected error in ZMQ listener: {e}")
+            return [0, 0, 0], [0, 0, 0]
     
     # Graceful exit function
-    def Port_Clean_Exit(self, signum=None, frame=None):
-        self.running = False
-        self.receive_thread.join()
-        
-        # self.reply_socket.close() # Maybe can close this port right after getting reply?
-        self.send_socket.close() # Close the socket properly
-        self.receive_socket.close() # Close the socket properly
+    def Port_Clean_Exit(self):
+        self._running = False
+        self.send_socket.close()
+        self.receive_socket.close()
         self.kill_req_socket.close()
-        
-        self.context.term() # Terminate ZMQ context
-     
+        self.context.term()
         self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"ZMQ socket closed.")
 
     def Kill_Bridge_Send(self):

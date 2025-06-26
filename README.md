@@ -11,7 +11,7 @@ source .venv/bin/activate
 
 ### Shortcut command (for local testing only, ensure you __exported__ the paths for **Basilisk** as `BSK_FORK` and **ROS2Bridge** as `ROS2_Bridge`)
 ```
-cd $BSK_FORK && . .venv/bin/activate && cd $ROS2_Bridge
+source $BSK_FORK/.venv/bin/activate
 ```
 
 Optionally, you can copy [`bsk-module/ROS2Handler.py`](bsk-module/ROS2Handler.py) and [`bsk-module/test_ROS2Handler.py`](bsk-module/test_ROS2Handler.py) into the Basilisk repo/forks, e.g. inside the `/dev` folder.
@@ -20,16 +20,16 @@ Optionally, you can copy [`bsk-module/ROS2Handler.py`](bsk-module/ROS2Handler.py
 
 1. In this repo, run ROS2 run to subscribe BSK-to-ZMQ-to-ROS2 converted message (ROS2 topic) `/basilisk_data` while publishing topic `/ros_to_basilisk`:
 ```
-python3 dev/bsk_data_processor.py
+python dev/bsk_data_processor.py
 ```
 
 2. Start ZMQ BSK-to-ROS2 bridge and published converted message as topic `/basilisk_data`, while subscribing topic `/ros_to_basilisk` to send to Basilisk:
 ```
-python3 dev/zmq_to_ros_bridge.py
+python dev/zmq_to_ros_bridge.py
 ```
 3. Run `test_ROS2Handler.py` to start a unit test case for the `ROS2Handler.py` Basilisk module by:
 ```
-python3 bsk-module/test_ROS2Handler.py
+python bsk-module/test_ROS2Handler.py
 ```
 
 Note that `ROS2Handler.py` and `test_ROS2Handler.py` are **not synchronized with Basilisk** and might not be fully up-to-date, check the developed module at the Basilisk repo side regularly.

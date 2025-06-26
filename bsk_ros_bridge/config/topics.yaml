@@ -1,0 +1,34 @@
+#####
+#
+# This file maps all the topics that are to be used for the BSK-ROS2 bridge.
+# Topics will be prefixed with namespace in launch files: /[namespace]/topic
+#
+#####
+
+# Topics published by the bridge (Basilisk -> ROS2)
+publications:
+  - topic: /state
+    type: geometry_msgs::msg::PoseStamped
+    description: "Spacecraft position and attitude"
+
+  - topic: /velocity
+    type: geometry_msgs::msg::TwistStamped
+    description: "Spacecraft linear and angular velocity"
+
+  - topic: /mass_properties
+    type: geometry_msgs::msg::InertiaStamped
+    description: "Spacecraft mass and inertia properties"
+
+# Topics subscribed by the bridge (ROS2 -> Basilisk)
+subscriptions:
+  - topic: /control_wrench
+    type: geometry_msgs::msg::WrenchStamped
+    description: "Control forces and torques"
+
+  - topic: /attitude_setpoint
+    type: geometry_msgs::msg::PoseStamped
+    description: "Desired spacecraft attitude"
+
+  - topic: /thrust_command
+    type: geometry_msgs::msg::Vector3Stamped
+    description: "Thrust vector command"
