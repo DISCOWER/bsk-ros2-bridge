@@ -1,7 +1,6 @@
 import pytest
-import numpy as np
-import zmq, json
 import inspect, os, sys
+import argparse
 
 filename = inspect.getframeinfo(inspect.currentframe()).filename
 path = os.path.dirname(os.path.abspath(filename))
@@ -29,15 +28,19 @@ def test_RosBridgeHandlerAllTest(function):
     [testResults, testMessage] = eval(function + '()')
     assert testResults < 1, testMessage
     
-def test_RosBridgeHandler(test_rate = 0.1, sim_time = 20.):
-    """Module Unit Test"""
+def test_RosBridgeHandler(test_rate=0.01, sim_time=300., namespace="test_sat1"):
+    """
+    Module Unit Test
+    
+    Args:
+        test_rate (float): Simulation update rate in seconds
+        sim_time (float): Total simulation time in seconds  
+        namespace (str): Spacecraft namespace for the bridge handler
+    """
     # The __tracebackhide__ setting influences pytest showing of tracebacks:
     # the mrp_steering_tracking() function will not be shown unless the
     # --fulltrace command line option is specified.
     __tracebackhide__ = True
-
-    testFailCount = 0  # zero unit test result counter
-    testMessages = []  # create empty list to store test log messages
     
     unitTaskName = "unitTask"  # arbitrary name (don't change)
     unitProcessName = "TestProcess"  # arbitrary name (don't change)
@@ -56,8 +59,8 @@ def test_RosBridgeHandler(test_rate = 0.1, sim_time = 20.):
     # clockSync.accelFactor = 50.0
     unitTestSim.AddModelToTask(unitTaskName, clockSync) # Check if this task name is valid later...
 
-    # Include test module with namespace:
-    module = RosBridgeHandler(namespace="test_sat1")
+    # Include test module with configurable namespace:
+    module = RosBridgeHandler(namespace=namespace)
     module.ModelTag = "ros_bridge_handler"
 
     # Add test module to runtime call list
@@ -96,40 +99,41 @@ def test_RosBridgeHandler(test_rate = 0.1, sim_time = 20.):
     """
     
     # Start simulation:
+    print(f"Initializing Basilisk simulation for namespace '{namespace}'...")
     unitTestSim.InitializeSimulation()
 
     # Step the simulation to 3*process rate so 4 total steps including zero
+    print(f"Running simulation for {sim_time}s at {1/test_rate:.1f} Hz...")
     unitTestSim.ConfigureStopTime(macros.sec2nano(sim_time))  # seconds to stop simulation
     unitTestSim.ExecuteSimulation()
     
-    # TODO - Kill bridge messsage send to REQ port to kill ZMQ Bridge
-    # if(unitTestSim.simulationFinished):
-    module.Kill_Bridge_Send()
+    print(f"Simulation complete. Sending kill signal to bridge...")
+    # Send kill signal to bridge
+    module.send_kill_signal()
     
-    # Test pass/fail conditions:
-    if testFailCount == 0:
-        print("PASSED: " + " External Body Force and Torque Inegrated Sim Test")
-
-    assert testFailCount < 1, testMessages
-
-    # return fail count and join into a single string all messages in the list
-    # testMessage
-    return [testFailCount, ''.join(testMessages)]
-    
-def __set_fake_bridge_send_receive_sockets(module):
-    context = zmq.Context()
-    sub_socket = context.socket(zmq.SUB)
-    sub_socket.connect(f"tcp://localhost:{module.send_port}")  # Adjust as needed
-    sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
-    sub_socket.setsockopt(zmq.CONFLATE, 1)  # Always latest data    
-
-    pub_socket = context.socket(zmq.PUB)
-    pub_socket.bind(f"tcp://*:{module.receive_port}")  # Adjust as needed
-    
-    return context, sub_socket, pub_socket   
+    # Done with simulation
+    print(f"DONE: Simulation finished")
     
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Run Basilisk ROS Bridge Handler test')
+    parser.add_argument('--namespace', '-n', type=str, default='test_sat1',
+                       help='Spacecraft namespace for the bridge handler (default: test_sat1)')
+    parser.add_argument('--rate', '-r', type=float, default=1/100,
+                       help='Simulation update rate in seconds (default: 1/100 = 100 Hz)')
+    parser.add_argument('--time', '-t', type=float, default=300.0,
+                       help='Total simulation time in seconds (default: 300.0)')
+    
+    args = parser.parse_args()
+    
+    print(f"Starting Basilisk ROS Bridge Handler test with:")
+    print(f"  Namespace: {args.namespace}")
+    print(f"  Update rate: {args.rate:.6f}s ({1/args.rate:.1f} Hz)")
+    print(f"  Simulation time: {args.time}s")
+    print("")
+    
     test_RosBridgeHandler(
-        test_rate = 1/500, # Set custom test rate for testing ROS2-BSK synchronization/time delay.
-        sim_time = 300. # Set custom test sim. time.
+        test_rate=args.rate,
+        sim_time=args.time,
+        namespace=args.namespace
     )

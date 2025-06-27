@@ -23,7 +23,7 @@ source /opt/ros/humble/setup.bash  # or your ROS2 distribution
 ### For Basilisk Module Only
 The Basilisk module requires Basilisk's Python environment:
 ```bash
-cd $BSK_REPO  # replace with your Basilisk repository path
+cd $BSK_FORK  # replace with your Basilisk repository path
 source .venv/bin/activate
 ```
 
@@ -65,7 +65,7 @@ ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/test_sat1
 ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/test_sat2
 
 # Terminal 3 - Spacecraft 3
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/my_satellite
+ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/test_sat3
 ```
 
 Each instance will automatically create its own topic tree under the specified namespace.
@@ -75,9 +75,43 @@ Import and use the `ros_bridge_handler.py` module in your Basilisk scenarios.
 
 **Note:** This requires Basilisk's Python environment to be activated first:
 ```bash
-cd $BSK_REPO && source .venv/bin/activate
+source $BSK_FORK/.venv/bin/activate
 python examples/ex_ros_bridge_handler.py
 ```
+
+**Command line options:**
+- `--namespace, -n`: Spacecraft namespace (default: test_sat1)
+- `--rate, -r`: Simulation update rate in seconds (default: 0.01 = 100 Hz)
+- `--time, -t`: Total simulation time in seconds (default: 300.0)
+
+**Single spacecraft examples:**
+```bash
+# Default run (test_sat1 namespace, 100 Hz, 300 seconds)
+python examples/ex_ros_bridge_handler.py
+
+# Custom namespace
+python examples/ex_ros_bridge_handler.py --namespace test_sat1
+
+# High-frequency test (500 Hz) for 60 seconds
+python examples/ex_ros_bridge_handler.py --namespace test_sat1 --rate 0.002 --time 60
+```
+
+**Multiple spacecraft simulation:**
+For multiple spacecraft, use the dedicated multi-spacecraft example that runs all spacecraft in a single Basilisk simulation:
+
+```bash
+# Fixed 3 spacecraft example (test_sat1, test_sat2, test_sat3)
+python examples/ex_multi_spacecraft.py
+```
+
+This example demonstrates:
+- **Three spacecraft** with fixed namespaces: `test_sat1`, `test_sat2`, `test_sat3`
+- **Different update rates**: 100 Hz, 50 Hz, and 200 Hz respectively
+- **Shared ZMQ ports** (5550-5552) - all spacecraft communicate through the same bridge
+- **Unique initial conditions** for each spacecraft (different orbits, velocities, attitudes)
+- **Single Basilisk simulation** with separate tasks/processes for each spacecraft
+
+This approach represents realistic multi-spacecraft missions where all vehicles are simulated together but operate at different control frequencies.
 
 ## Configuration
 
@@ -97,7 +131,6 @@ Topics are configured in `config/topics.yaml`. The bridge currently supports:
 - **5550** - Basilisk → Bridge (simulation data)
 - **5551** - Bridge → Basilisk (control commands)  
 - **5552** - Bridge heartbeat (health monitoring)
-- **5553** - Kill request (graceful shutdown)
 
 ## Architecture
 
@@ -133,26 +166,45 @@ The `ros_bridge_handler.py` module should be imported into your Basilisk scenari
 
 **Note:** Testing requires Basilisk's Python environment:
 ```bash
-cd $BSK_REPO && source .venv/bin/activate
+source $BSK_FORK/.venv/bin/activate
+
+# Single spacecraft test
 python examples/ex_ros_bridge_handler.py
+
+# Multi-spacecraft test (3 spacecraft by default)
+python examples/ex_multi_spacecraft.py
 ```
+
+The package includes two example files:
+- `ex_ros_bridge_handler.py` - Single spacecraft simulation with configurable namespace
+- `ex_multi_spacecraft.py` - Multiple spacecraft in one simulation with automatic port management
+
+For multiple spacecraft testing, use `ex_multi_spacecraft.py` which runs three spacecraft (`test_sat1`, `test_sat2`, `test_sat3`) in a single Basilisk simulation, each at different update rates but sharing the same ZMQ ports through the bridge. 
 
 ### Custom Configuration
 Modify `config/topics.yaml` to add custom message types or topics for your specific spacecraft configuration.
 
 ### Multiple Spacecraft
-The bridge supports multiple spacecraft through namespacing. Each Basilisk instance can specify its own namespace, and the bridge will automatically create separate ROS2 topic trees.
+The bridge supports multiple spacecraft through namespacing. For multi-spacecraft scenarios, use the dedicated `ex_multi_spacecraft.py` example which runs all spacecraft within a single Basilisk simulation. The example features:
+
+- **Fixed configuration**: Three spacecraft (`test_sat1`, `test_sat2`, `test_sat3`)
+- **Different update rates**: Each spacecraft operates at its own frequency (100 Hz, 50 Hz, 200 Hz)
+- **Shared ZMQ ports**: All spacecraft communicate through the same bridge instance (ports 5550-5552)
+- **Unique state data**: Each spacecraft has different initial orbits, attitudes, and velocities
+- **Realistic simulation**: Represents multi-spacecraft missions with varying operational requirements
+
+This approach avoids port conflicts and demonstrates how multiple spacecraft can share bridge resources while maintaining independent control loops.
 
 ## Troubleshooting
 
 ### Port Conflicts
 If you encounter ZMQ port conflicts, check for occupied ports:
 ```bash
-# Check for occupied ports (default: 5550, 5551, 5552, 5553)
+# Check for occupied ports (default: 5550, 5551, 5552)
 lsof -i :5550
 lsof -i :5551
 lsof -i :5552
-lsof -i :5553
+lsof -i :5552
 ```
 
 Kill conflicting processes:
@@ -186,4 +238,4 @@ This package is licensed under BSD-3-Clause.
 
 - [Basilisk Astrodynamics Simulation](https://hanspeterschaub.info/basilisk/)
 - [ZeroMQ Messaging Library](https://zeromq.org/)
-- [ROS2 Documentation](https://docs.ros.org/)
+- [ROS2 Documentation](https://www.ros.org/)

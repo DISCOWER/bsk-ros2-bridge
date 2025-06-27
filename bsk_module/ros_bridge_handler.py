@@ -1,261 +1,415 @@
 from Basilisk.architecture import sysModel, messaging
-from Basilisk.utilities import orbitalMotion, unitTestSupport as UAT, RigidBodyKinematics as RBK # Import for Hill-frame conversion & control if necessary
-
-import zmq, json, time
+from Basilisk.utilities import orbitalMotion, unitTestSupport as UAT, RigidBodyKinematics as RBK
+import zmq
+import json
+import time
 import threading
+import numpy as np
+
+# Global variables should be avoided, but keeping for compatibility
 global delay_count
 delay_count = 0
+
+# Shared ZMQ context and sockets for multi-spacecraft scenarios
+_shared_context = None
+_shared_sockets = {}
 
 # See https://hanspeterschaub.info/basilisk/Learn/makingModules/pyModules.html for Python Module creation original example.
 class RosBridgeHandler(sysModel.SysModel):
     """
-    This class inherits from the `SysModel` available in the ``Basilisk.architecture.sysModel`` module.
-    The `SysModel` is the parent class which your Python BSK modules must inherit.
-    The class uses the following
-    virtual functions:
-
-    #. ``Reset``: The method that will initialize any persistent data in your model to a common
-       "ready to run" state (e.g. filter states, integral control sums, etc).
-    #. ``UpdateState``: The method that will be called at the rate specified
-       in the PythonTask that was created in the input file.
-
-    Additionally, your class should ensure that in the ``__init__`` method, your call the super
-    ``__init__`` method for the class so that the base class' constructor also gets called:
-
-    .. code-block:: python
-
-        super(RosBridgeHandler, self).__init__()
-
-    You class must implement the above four functions. Beyond these four functions you class
-    can complete any other computations you need (``Numpy``, ``matplotlib``, vision processing
-    AI, whatever).
+    Basilisk-ROS2 Bridge Handler Module
+    
+    This class bridges Basilisk spacecraft simulation with ROS2 by handling:
+    - ZMQ communication between Basilisk and ROS2 bridge
+    - Publishing spacecraft state data (position, velocity, attitude, mass properties)
+    - Receiving control commands (forces and torques) from ROS2
+    - Health monitoring via heartbeat mechanism
+    - Graceful shutdown and resource cleanup
+    
+    Inherits from SysModel and implements the required methods:
+    - Reset(): Initialize persistent data to ready state
+    - UpdateState(): Cyclical worker method called at specified rate
+    
+    Usage:
+        bridge = RosBridgeHandler(namespace="spacecraft1")
+        bridge.scStateInMsg.subscribeTo(scStateMsg)
+        # Add to simulation task...
     """
-    def __init__(self, namespace="spacecraft1", send_port = 5550, receive_port = 5551, heartbeat_port=5552, kill_request_port = 5553, timeout = 15):
+    def __init__(self, namespace="spacecraft1", send_port=5550, receive_port=5551, 
+                 heartbeat_port=5552, timeout=15):
+        """
+        Initialize the ROS Bridge Handler.
+        
+        Args:
+            namespace (str): Spacecraft namespace for topic routing
+            send_port (int): ZMQ port for sending data to bridge (BSK -> ROS2)
+            receive_port (int): ZMQ port for receiving data from bridge (ROS2 -> BSK)
+            heartbeat_port (int): ZMQ port for heartbeat monitoring
+            timeout (int): Timeout in seconds for various operations
+        """
+        # Call parent constructor first - this is critical for Basilisk modules
         super(RosBridgeHandler, self).__init__()
 
-        # Spacecraft namespace for topic routing
+        # Configuration parameters
         self.namespace = namespace
-
-        # Initialise TCP port for ZMQ socket binding:
         self.timeout = timeout
-        self.kill_request_port = kill_request_port
         self.send_port = send_port
         self.receive_port = receive_port
         self.heartbeat_port = heartbeat_port
         
-        # INPUT MSG:
-        self.scStateInMsg = messaging.SCStatesMsgReader() # For all S/C states.
-        # self.vehConfigInMsg = messaging.VehicleConfigMsgReader() # For mass, Isc, CoM & ADCS states.        
+        # Declare input messages (following Basilisk pattern)
+        self.scStateInMsg = messaging.SCStatesMsgReader()
+        # TODO: Add vehicle config support
+        # self.vehConfigInMsg = messaging.VehicleConfigMsgReader()
         
-        # OUTPUT MSG --> Should be designed to subscribe published ROS2 topic containing Cmd Force & Torque messages created by ROS2-side controllers.
-        self.cmdForceOutMsg = messaging.CmdForceBodyMsg() # 
+        # Declare output messages (following Basilisk pattern)
+        self.cmdForceOutMsg = messaging.CmdForceBodyMsg()
         self.cmdTorqueOutMsg = messaging.CmdTorqueBodyMsg()
         
-        # Initialize instance variables for efficiency
-        self.last_publish_time = 0
-        self.publish_interval = 0.01  # Publish at 100 Hz max
-        self.last_force_cmd = [0, 0, 0]
-        self.last_torque_cmd = [0, 0, 0]
-        
-        # Initialize ZMQ Context
-        self.context = zmq.Context()
-
-        # --- Heartbeat monitoring from bridge ---
-        self.heartbeat_sub = self.context.socket(zmq.SUB)
-        self.heartbeat_sub.connect(f"tcp://localhost:{self.heartbeat_port}")
-        self.heartbeat_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-
+        # State tracking variables
+        self.last_force_cmd = [0.0, 0.0, 0.0]
+        self.last_torque_cmd = [0.0, 0.0, 0.0]
         self.last_heartbeat_time = None
         self._running = True
         self._heartbeat_was_lost = False
+        self._initialization_complete = False
+        
+        # Initialize ZMQ communication (done in __init__ as per Basilisk pattern)
+        self._setup_zmq_communication()
+        
+        # Wait for bridge heartbeat before proceeding
+        self._wait_for_bridge_connection()
+        
+        self._initialization_complete = True
+        
+    def _setup_zmq_communication(self):
+        """Setup all ZMQ sockets and communication channels."""
+        global _shared_context, _shared_sockets
+        
+        # Use shared context for multi-spacecraft scenarios
+        if _shared_context is None:
+            _shared_context = zmq.Context()
+        self.context = _shared_context
+        
+        # Setup heartbeat monitoring
+        self._setup_heartbeat_monitoring()
+        
+        # Setup data publisher (BSK -> ROS2) - use shared socket
+        self._setup_data_publisher()
+        
+        # Setup command subscriber (ROS2 -> BSK)
+        self._setup_command_subscriber()
+        
+    def _setup_heartbeat_monitoring(self):
+        """Setup heartbeat monitoring from bridge."""
+        self.heartbeat_sub = self.context.socket(zmq.SUB)
+        self.heartbeat_sub.connect(f"tcp://localhost:{self.heartbeat_port}")
+        self.heartbeat_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.heartbeat_sub.setsockopt(zmq.RCVTIMEO, 10)  # 10ms timeout
 
         def heartbeat_monitor():
+            """Background thread to monitor bridge heartbeat."""
             while self._running:
                 try:
-                    msg = self.heartbeat_sub.recv_string(flags=zmq.NOBLOCK)
+                    self.heartbeat_sub.recv_string(flags=zmq.NOBLOCK)
                     self.last_heartbeat_time = time.time()
                 except zmq.Again:
                     time.sleep(0.01)
-        threading.Thread(target=heartbeat_monitor, daemon=True).start()
-
-        # --- ZMQ Publisher (BSK → ROS2) ---
-        self.send_socket = self.context.socket(zmq.PUB)
-        self.send_socket.setsockopt(zmq.LINGER, 0)  # Ensures the socket closes immediately
-        try:
-            self.send_socket.bind(f"tcp://*:{self.send_port}") # Combine port string
-        except zmq.ZMQError as e:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"Port {self.send_port} is already in use: {e}, check for available Localhost Ports and reset. \n\r Exiting Python Simulation...")
-            exit(0)
-
-        # --- ZMQ Subscriber (ROS2 → BSK) ---
+                except (zmq.ZMQError, zmq.ContextTerminated) as e:
+                    if self._running and self._initialization_complete:
+                        print(f"[{self.namespace}] Heartbeat monitoring stopped: {e}")
+                    break
+                except Exception as e:
+                    if self._initialization_complete and self._running:
+                        print(f"[{self.namespace}] Heartbeat monitoring error: {e}")
+                    time.sleep(0.1)
+        
+        self.heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
+        self.heartbeat_thread.start()
+        
+    def _setup_data_publisher(self):
+        """Setup ZMQ publisher for sending data to bridge."""
+        global _shared_sockets
+        
+        # Use shared socket for all spacecraft to avoid port conflicts
+        socket_key = f"send_{self.send_port}"
+        
+        if socket_key not in _shared_sockets:
+            # First handler creates and binds the socket
+            self.send_socket = self.context.socket(zmq.PUB)
+            self.send_socket.setsockopt(zmq.LINGER, 0)
+            self.send_socket.setsockopt(zmq.SNDHWM, 100)  # High water mark
+            
+            try:
+                self.send_socket.bind(f"tcp://*:{self.send_port}")
+                _shared_sockets[socket_key] = self.send_socket
+                print(f"[{self.namespace}] Created and bound shared publisher on port {self.send_port}")
+            except zmq.ZMQError as e:
+                error_msg = f"Failed to bind to port {self.send_port}: {e}"
+                print(f"ERROR: {error_msg}")
+                self._init_error = error_msg
+                raise RuntimeError(error_msg)
+        else:
+            # Subsequent handlers use the existing socket
+            self.send_socket = _shared_sockets[socket_key]
+            print(f"[{self.namespace}] Using shared publisher on port {self.send_port}")
+            
+    def _setup_command_subscriber(self):
+        """Setup ZMQ subscriber for receiving commands from bridge."""
         self.receive_socket = self.context.socket(zmq.SUB)
-        self.receive_socket.connect(f"tcp://localhost:{self.receive_port}")  # ROS2 will publish here
+        self.receive_socket.connect(f"tcp://localhost:{self.receive_port}")
         self.receive_socket.setsockopt_string(zmq.SUBSCRIBE, '')
-        self.receive_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep the latest message, TODO check if this will be problematic!
-
-        # --- Kill request port ---
-        self.kill_req_socket = self.context.socket(zmq.REQ)
-        self.kill_req_socket.connect(f"tcp://localhost:{self.kill_request_port}")
-        self.kill_req_socket.setsockopt(zmq.RCVTIMEO, -1)  # -1 means wait forever
-
-        # --- Wait for the first heartbeat before starting! ---
-        print("Waiting for bridge heartbeat...")
+        self.receive_socket.setsockopt(zmq.CONFLATE, 1)  # Keep only latest message
+        self.receive_socket.setsockopt(zmq.RCVTIMEO, 1)   # 1ms timeout
+        
+    def _wait_for_bridge_connection(self):
+        """Wait for the first heartbeat before starting operations."""
+        print(f"[{self.namespace}] Waiting for bridge heartbeat...")
+        start_time = time.time()
+        
         while self.last_heartbeat_time is None:
+            if time.time() - start_time > self.timeout:
+                error_msg = f"Timeout waiting for bridge heartbeat after {self.timeout}s"
+                print(f"ERROR: {error_msg}")
+                raise TimeoutError(error_msg)
             time.sleep(0.01)
-        print("Bridge heartbeat detected. Starting module.")
+            
+        print(f"[{self.namespace}] Bridge heartbeat detected. Module ready.")
         
     def Reset(self, CurrentSimNanos):
-         # 1) Message subscription check -> throw BSK log error if not linked;
+        """
+        Reset method called to initialize persistent data to ready state.
+        
+        This method is called once after selfInit/crossInit, but should be
+        written to allow multiple calls if necessary.
+        
+        Args:
+            CurrentSimNanos (int): Current simulation time in nanoseconds
+        """
+        # Validate message connections - this follows Basilisk best practices
         if not self.scStateInMsg.isLinked():
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error: RosBridgeHandler.scStateInMsg wasn't connected.")
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                 "RosBridgeHandler.scStateInMsg is not connected.")
+            
+        # TODO: Add vehicle config validation when implemented
         # if not self.vehConfigInMsg.isLinked():
-        #     self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error: RosBridgeHandler.vehConfigInMsg wasn't connected.")
-        """
-        The Reset method is used to clear out any persistent variables that need to get changed
-        when a task is restarted.  This method is typically only called once after selfInit/crossInit,
-        but it should be written to allow the user to call it multiple times if necessary.
-        :param CurrentSimNanos: current simulation time in nano-seconds
-        :return: none
-        """
+        #     self.bskLogger.bskLog(sysModel.BSK_ERROR, "RosBridgeHandler.vehConfigInMsg is not connected.")
+        
+        # Reset state variables
+        self.last_force_cmd = [0.0, 0.0, 0.0]
+        self.last_torque_cmd = [0.0, 0.0, 0.0]
+        
+        # Initialize output messages to zero state (Basilisk best practice)
+        forceOutMsgBuffer = messaging.CmdForceBodyMsgPayload()
+        forceOutMsgBuffer.forceRequestBody = [0.0, 0.0, 0.0]
+        self.cmdForceOutMsg.write(forceOutMsgBuffer, CurrentSimNanos, self.moduleID)
+        
+        torqueOutMsgBuffer = messaging.CmdTorqueBodyMsgPayload()
+        torqueOutMsgBuffer.torqueRequestBody = [0.0, 0.0, 0.0]
+        self.cmdTorqueOutMsg.write(torqueOutMsgBuffer, CurrentSimNanos, self.moduleID)
+        
+        self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                             f"Reset complete for RosBridgeHandler namespace: {self.namespace}")
         return
 
     def UpdateState(self, CurrentSimNanos):
         """
-        The updateState method is the cyclical worker method for a given Basilisk class.  It
-        will get called periodically at the rate specified in the task that the model is
-        attached to.  It persists and anything can be done inside of it.  If you have realtime
-        requirements though, be careful about how much processing you put into a Python UpdateState
-        method.  You could easily detonate your sim's ability to run in realtime.
-
-        :param CurrentSimNanos: current simulation time in nano-seconds
-        :return: none
+        Cyclical worker method called at the specified task rate.
+        
+        Handles:
+        - Heartbeat monitoring
+        - Publishing spacecraft state to ROS2
+        - Receiving control commands from ROS2
+        - Updating output messages for Basilisk
+        
+        Args:
+            CurrentSimNanos (int): Current simulation time in nanoseconds
         """
+        # Check bridge heartbeat health
+        if not self._check_bridge_health():
+            return
+            
+        # Read input messages
+        scStateInMsgBuffer = self.scStateInMsg()
+        
+        # Publish spacecraft state to ROS2 (every UpdateState call for maximum frequency)
+        self._publish_spacecraft_state(CurrentSimNanos, scStateInMsgBuffer)
+        self._publish_spacecraft_velocity(CurrentSimNanos, scStateInMsgBuffer)
+        # TODO: Implement mass properties publishing
+        # self._publish_mass_properties(CurrentSimNanos, vehConfigMsgBuffer)
+            
+        # Receive and process control commands from ROS2
+        force_cmd, torque_cmd = self._receive_control_commands()
+        
+        # Update output messages if commands changed
+        self._update_force_output(force_cmd, CurrentSimNanos)
+        self._update_torque_output(torque_cmd, CurrentSimNanos)
+        
+        # Periodic logging (once per second to avoid performance impact)
+        # Following Basilisk pattern for module logging
+        if CurrentSimNanos % int(1e9) == 0:
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                 f"RosBridgeHandler [{self.namespace}] Update at {CurrentSimNanos * 1.0E-9:.3f}s")
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, 
+                                 f"Force Command: {force_cmd}, Torque Command: {torque_cmd}")
+            
+    def _check_bridge_health(self):
+        """Check if bridge heartbeat is healthy."""
         now = time.time()
         if self.last_heartbeat_time is None or (now - self.last_heartbeat_time > 1.0):
             if not self._heartbeat_was_lost:
-                print("No bridge heartbeat for >1s! Pausing UpdateState.")
+                print(f"[{self.namespace}] No bridge heartbeat for >1s! Pausing UpdateState.")
                 self._heartbeat_was_lost = True
-            return
+            return False
         else:
             if self._heartbeat_was_lost:
-                print("Bridge heartbeat restored. Resuming UpdateState.")
+                print(f"[{self.namespace}] Bridge heartbeat restored. Resuming UpdateState.")
                 self._heartbeat_was_lost = False
-
-        # read input message
-        scStateInMsgBuffer = self.scStateInMsg()
-        # vehConfigMsgBuffer = self.vehConfigInMsg()
-        
-        # create output message buffer
-        forceOutMsgBuffer = messaging.CmdForceBodyMsgPayload()
-        torqueOutMsgBuffer = messaging.CmdTorqueBodyMsgPayload()
-        
-        ### BSK -> ROS2 MSG:
-        self.__ZMQ_SCState_Publisher(CurrentSimNanos, scStateInMsgBuffer)
-        
-        #### ROS2 -> BSK MSG:
-        FrCmd, lrCmd = self.__ZMQ_Force_Torque_Listener()
-        
-        # Only update if commands changed
-        if FrCmd != self.last_force_cmd:
-            forceOutMsgBuffer.forceRequestBody = FrCmd
-            self.cmdForceOutMsg.write(forceOutMsgBuffer, CurrentSimNanos, self.moduleID)
-            self.last_force_cmd = FrCmd.copy() if isinstance(FrCmd, list) else FrCmd
-        
-        if lrCmd != self.last_torque_cmd:
-            torqueOutMsgBuffer.torqueRequestBody = lrCmd
-            self.cmdTorqueOutMsg.write(torqueOutMsgBuffer, CurrentSimNanos, self.moduleID)
-            self.last_torque_cmd = lrCmd.copy() if isinstance(lrCmd, list) else lrCmd
-
-        # All Python SysModels have self.bskLogger available
-        # The logger level flags (i.e. BSK_INFORMATION) may be
-        # accessed from sysModel
-        # Only log occasionally to avoid performance impact
-        if CurrentSimNanos % int(1e9) == 0:  # Log once per second
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"------ RosBridgeHandler Module ------")
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Time: {CurrentSimNanos * 1.0E-9} s")
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Written Msg - ForceRequestBody: {FrCmd}")
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Written Msg - TorqueRequestBody: {lrCmd}")
+            return True
             
-        return
-    
-    def __ZMQ_SCState_Publisher(self, CurrentSimNanos, scStateInMsgBuffer):
-        # scStateInMsgBuffer.sigma_BN
-        BSKMsg = {
+    def _publish_spacecraft_state(self, CurrentSimNanos, scStateInMsgBuffer):
+        """Publish spacecraft position and attitude state."""
+        try:
+            # Convert MRP to quaternion (w, x, y, z format)
+            quaternion = RBK.MRP2EP(scStateInMsgBuffer.sigma_BN)
+            
+            state_msg = {
                 "namespace": self.namespace,
                 "topic": "/state",
                 "time": CurrentSimNanos * 1.0E-9,
-                "position": scStateInMsgBuffer.r_BN_N, # To check if we need `tolist()`!
-                "velocity": scStateInMsgBuffer.v_BN_N,
-                "attitude": RBK.MRP2EP(scStateInMsgBuffer.sigma_BN).tolist(), # convert MRP to Quaternions.
-                "angular_velocity": scStateInMsgBuffer.omega_BN_B,
+                "position": scStateInMsgBuffer.r_BN_N.tolist() if hasattr(scStateInMsgBuffer.r_BN_N, 'tolist') else list(scStateInMsgBuffer.r_BN_N),
+                "orientation": quaternion.tolist() if hasattr(quaternion, 'tolist') else list(quaternion),
                 "frame_id": "map"
-        }
-        try:
-            self.send_socket.send_string(json.dumps(BSKMsg))
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Published: {BSKMsg}")
-
+            }
+            
+            self.send_socket.send_string(json.dumps(state_msg), flags=zmq.NOBLOCK)
+            
         except Exception as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"BSK-To-ROS2 Publishing Error: {e}")
-        
-        return
-    
-    def __ZMQ_Force_Torque_Listener(self):
-        """ Listens for incoming ZMQ messages from ROS2 and processes them. """
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing state: {e}")
+            
+    def _publish_spacecraft_velocity(self, CurrentSimNanos, scStateInMsgBuffer):
+        """Publish spacecraft linear and angular velocity."""
         try:
-            ROS_zmq_msg = self.receive_socket.recv_string(flags=zmq.NOBLOCK)
-            ROS2_raw_data_json = json.loads(ROS_zmq_msg)
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, f"Received command from ROS2: {ROS2_raw_data_json}")
+            velocity_msg = {
+                "namespace": self.namespace,
+                "topic": "/velocity",
+                "time": CurrentSimNanos * 1.0E-9,
+                "linear": scStateInMsgBuffer.v_BN_N.tolist() if hasattr(scStateInMsgBuffer.v_BN_N, 'tolist') else list(scStateInMsgBuffer.v_BN_N),
+                "angular": scStateInMsgBuffer.omega_BN_B.tolist() if hasattr(scStateInMsgBuffer.omega_BN_B, 'tolist') else list(scStateInMsgBuffer.omega_BN_B),
+                "frame_id": f"{self.namespace.strip('/')}_body"
+            }
             
-            # Unpack ROS2 json - now using combined wrench format:
-            FrCmd = ROS2_raw_data_json["force"]
-            lrCmd = ROS2_raw_data_json["torque"]
+            self.send_socket.send_string(json.dumps(velocity_msg), flags=zmq.NOBLOCK)
             
+        except Exception as e:
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing velocity: {e}")
+            
+    def _receive_control_commands(self):
+        """Receive and parse control commands from ROS2."""
+        try:
+            ros_msg = self.receive_socket.recv_string(flags=zmq.NOBLOCK)
+            command_data = json.loads(ros_msg)
+            
+            # Extract force and torque commands
+            force_cmd = command_data.get("force", [0.0, 0.0, 0.0])
+            torque_cmd = command_data.get("torque", [0.0, 0.0, 0.0])
+            
+            # Validate command format
+            if not (isinstance(force_cmd, list) and len(force_cmd) == 3):
+                raise ValueError(f"Invalid force command format: {force_cmd}")
+            if not (isinstance(torque_cmd, list) and len(torque_cmd) == 3):
+                raise ValueError(f"Invalid torque command format: {torque_cmd}")
+                
             # Reset delay count on successful receive
             global delay_count
-            if delay_count > 0:
-                delay_count = 0
-                
-            return FrCmd, lrCmd
+            delay_count = 0
+            
+            return force_cmd, torque_cmd
             
         except zmq.Again:
-            # No message available, return last known commands
+            # No new message available, return last known commands
             return self.last_force_cmd, self.last_torque_cmd
-        except (json.JSONDecodeError, KeyError) as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error parsing ROS2 message: {e}")
-            return [0, 0, 0], [0, 0, 0]
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            self.bskLogger.bskLog(sysModel.BSK_WARNING, f"Error parsing control command: {e}")
+            return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
         except Exception as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Unexpected error in ZMQ listener: {e}")
-            return [0, 0, 0], [0, 0, 0]
-    
-    # Graceful exit function
-    def Port_Clean_Exit(self):
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Unexpected error receiving commands: {e}")
+            return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+            
+    def _update_force_output(self, force_cmd, CurrentSimNanos):
+        """Update force output message if command changed."""
+        if force_cmd != self.last_force_cmd:
+            forceOutMsgBuffer = messaging.CmdForceBodyMsgPayload()
+            forceOutMsgBuffer.forceRequestBody = force_cmd
+            self.cmdForceOutMsg.write(forceOutMsgBuffer, CurrentSimNanos, self.moduleID)
+            self.last_force_cmd = force_cmd.copy() if isinstance(force_cmd, list) else force_cmd
+            
+    def _update_torque_output(self, torque_cmd, CurrentSimNanos):
+        """Update torque output message if command changed."""
+        if torque_cmd != self.last_torque_cmd:
+            torqueOutMsgBuffer = messaging.CmdTorqueBodyMsgPayload()
+            torqueOutMsgBuffer.torqueRequestBody = torque_cmd
+            self.cmdTorqueOutMsg.write(torqueOutMsgBuffer, CurrentSimNanos, self.moduleID)
+            self.last_torque_cmd = torque_cmd.copy() if isinstance(torque_cmd, list) else torque_cmd
+            
+    def shutdown(self):
+        """
+        Graceful shutdown of the bridge handler.
+        
+        Stops all background threads, closes ZMQ sockets, and cleans up resources.
+        """
+        if not hasattr(self, '_running') or not self._running:
+            return  # Already shut down
+            
         self._running = False
-        self.send_socket.close()
-        self.receive_socket.close()
-        self.kill_req_socket.close()
-        self.context.term()
-        self.bskLogger.bskLog(sysModel.BSK_INFORMATION, f"ZMQ socket closed.")
+        
+        # Wait for heartbeat thread to finish
+        if hasattr(self, 'heartbeat_thread') and self.heartbeat_thread.is_alive():
+            self.heartbeat_thread.join(timeout=1.0)
+        
+        # Close all sockets
+        try:
+            if hasattr(self, 'receive_socket'):
+                self.receive_socket.close()
+            if hasattr(self, 'heartbeat_sub'):
+                self.heartbeat_sub.close()
+        except Exception as e:
+            if hasattr(self, 'bskLogger'):
+                self.bskLogger.bskLog(sysModel.BSK_WARNING, f"Error during socket cleanup: {e}")
+            else:
+                print(f"Warning: Error during socket cleanup: {e}")
+        
+        if hasattr(self, 'bskLogger'):
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                 f"RosBridgeHandler [{self.namespace}] shutdown complete")
+        else:
+            print(f"[{self.namespace}] RosBridgeHandler shutdown complete")
 
-    def Kill_Bridge_Send(self):
+    def send_kill_signal(self):
+        """
+        Shutdown the bridge handler.
+        
+        Returns:
+            bool: True indicating successful shutdown
+        """
         global delay_count
-        print(f'Delayed count for actuation messages: {delay_count}')
-        isKilled = False
-        while not isKilled:
-            try:
-                self.kill_req_socket.send_string("Kill")
-                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Bridge Kill Signal sent to Kill-REP port.")
-                # try:
-                reply = self.kill_req_socket.recv_string()
-                if reply == "Killed":
-                    isKilled = True
-                    self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Bridge Killed. Exiting...")
-                    break
-                else:
-                    self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Bridge Kill-REP port replied error: {reply}")
-                # except zmq.error.Again:
-                #     pass
-
-            except zmq.error.ZMQError:
-                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Operation cannot be accomplished in current state, trying again")
-                pass
-        self.Port_Clean_Exit()
+        print(f'[{self.namespace}] Delayed count for actuation messages: {delay_count}')
+        
+        if hasattr(self, 'bskLogger'):
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Shutdown initiated")
+        else:
+            print(f"[{self.namespace}] Shutdown initiated")
+        
+        self.shutdown()
+        return True
+        
+    # Legacy method names for backward compatibility
+    def Port_Clean_Exit(self):
+        """Legacy method - use shutdown() instead."""
+        print("Warning: Port_Clean_Exit() is deprecated, use shutdown() instead")
+        self.shutdown()
+        
+    def Kill_Bridge_Send(self):
+        """Legacy method - use send_kill_signal() instead."""
+        print("Warning: Kill_Bridge_Send() is deprecated, use send_kill_signal() instead")
+        return self.send_kill_signal()
