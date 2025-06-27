@@ -30,7 +30,7 @@ class RosBridgeHandler(sysModel.SysModel):
     can complete any other computations you need (``Numpy``, ``matplotlib``, vision processing
     AI, whatever).
     """
-    def __init__(self, namespace="spacecraft1", kill_request_port = 9999, send_port = 5555, receive_port = 7070, heartbeat_port=9997, timeout = 15):
+    def __init__(self, namespace="spacecraft1", send_port = 5550, receive_port = 5551, heartbeat_port=5552, kill_request_port = 5553, timeout = 15):
         super(RosBridgeHandler, self).__init__()
 
         # Spacecraft namespace for topic routing
