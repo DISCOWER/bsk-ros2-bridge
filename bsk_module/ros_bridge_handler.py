@@ -215,10 +215,10 @@ class RosBridgeHandler(sysModel.SysModel):
     def UpdateState(self, CurrentSimNanos):
         """
         Cyclical worker method called at the specified task rate.
-        
         Handles:
         - Heartbeat monitoring
         - Publishing spacecraft state to ROS2
+        - Publishing simulation time to ROS2
         - Receiving control commands from ROS2
         - Updating output messages for Basilisk
         
@@ -228,10 +228,13 @@ class RosBridgeHandler(sysModel.SysModel):
         # Check bridge heartbeat health
         if not self._check_bridge_health():
             return
-            
+
         # Read input messages
         scStateInMsgBuffer = self.scStateInMsg()
-        
+
+        # Publish simulation time to a unique ROS topic
+        self._publish_sim_time(CurrentSimNanos)
+
         # Publish spacecraft state to ROS2 (every UpdateState call for maximum frequency)
         self._publish_spacecraft_state(CurrentSimNanos, scStateInMsgBuffer)
         self._publish_spacecraft_velocity(CurrentSimNanos, scStateInMsgBuffer)
@@ -255,6 +258,7 @@ class RosBridgeHandler(sysModel.SysModel):
             
     def _check_bridge_health(self):
         """Check if bridge heartbeat is healthy."""
+        # Use simulation time for logging, but keep wall time for heartbeat timeout
         now = time.time()
         if self.last_heartbeat_time is None or (now - self.last_heartbeat_time > 1.0):
             if not self._heartbeat_was_lost:
@@ -267,43 +271,54 @@ class RosBridgeHandler(sysModel.SysModel):
                 self._heartbeat_was_lost = False
             return True
             
+    def _publish_sim_time(self, CurrentSimNanos):
+        """Publish simulation time to a unique ROS topic for synchronization."""
+        try:
+            sim_time_msg = {
+                "topic": "/bsk_sim_time",
+                "sim_time": CurrentSimNanos * 1.0E-9  # seconds
+            }
+            self.send_socket.send_string(json.dumps(sim_time_msg), flags=zmq.NOBLOCK)
+        except Exception as e:
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing sim_time: {e}")
+
     def _publish_spacecraft_state(self, CurrentSimNanos, scStateInMsgBuffer):
         """Publish spacecraft position and attitude state."""
         try:
             # Convert MRP to quaternion (w, x, y, z format)
             quaternion = RBK.MRP2EP(scStateInMsgBuffer.sigma_BN)
-            
+
             state_msg = {
                 "namespace": self.namespace,
                 "topic": "/state",
-                "time": CurrentSimNanos * 1.0E-9,
+                "time": CurrentSimNanos * 1.0E-9,  # simulation time in seconds
                 "position": scStateInMsgBuffer.r_BN_N.tolist() if hasattr(scStateInMsgBuffer.r_BN_N, 'tolist') else list(scStateInMsgBuffer.r_BN_N),
                 "orientation": quaternion.tolist() if hasattr(quaternion, 'tolist') else list(quaternion),
                 "frame_id": "map"
             }
-            
+
             self.send_socket.send_string(json.dumps(state_msg), flags=zmq.NOBLOCK)
-            
+
         except Exception as e:
             self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing state: {e}")
-            
+
     def _publish_spacecraft_velocity(self, CurrentSimNanos, scStateInMsgBuffer):
         """Publish spacecraft linear and angular velocity."""
         try:
             velocity_msg = {
                 "namespace": self.namespace,
                 "topic": "/velocity",
-                "time": CurrentSimNanos * 1.0E-9,
+                "time": CurrentSimNanos * 1.0E-9,  # simulation time in seconds
                 "linear": scStateInMsgBuffer.v_BN_N.tolist() if hasattr(scStateInMsgBuffer.v_BN_N, 'tolist') else list(scStateInMsgBuffer.v_BN_N),
                 "angular": scStateInMsgBuffer.omega_BN_B.tolist() if hasattr(scStateInMsgBuffer.omega_BN_B, 'tolist') else list(scStateInMsgBuffer.omega_BN_B),
                 "frame_id": f"{self.namespace.strip('/')}_body"
             }
-            
+
             self.send_socket.send_string(json.dumps(velocity_msg), flags=zmq.NOBLOCK)
-            
+
         except Exception as e:
             self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing velocity: {e}")
-            
+
     def _receive_control_commands(self):
         """Receive and parse control commands from ROS2."""
         try:

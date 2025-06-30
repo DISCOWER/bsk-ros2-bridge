@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, WrenchStamped, TwistStamped, Vector3Stamped, InertiaStamped
+from std_msgs.msg import Float64
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 import zmq, yaml,json, threading, os, time, importlib
 from ament_index_python.packages import get_package_share_directory
@@ -53,6 +54,7 @@ class BskRosBridge(Node):
         self.listener_thread = threading.Thread(target=self.zmq_listener, daemon=True)
         self.listener_thread.start()
         self.get_logger().info("Bridge initialised successfully.")
+        self.sim_time_pub = self.create_publisher(Float64, '/bsk_sim_time', 10)
 
     def load_config(self, yaml_path):
         """Load YAML config for topic mapping."""
@@ -205,13 +207,20 @@ class BskRosBridge(Node):
                 if not isinstance(data, dict):
                     self.get_logger().warn("Received non-dict message, skipping")
                     continue
-                    
-                namespace = data.get('namespace', 'default')
+
                 topic = data.get('topic', '/state')
-                
+                # Special handling for /bsk_sim_time (no namespace)
+                if topic == '/bsk_sim_time':
+                    sim_time = data.get('sim_time', None)
+                    if sim_time is not None:
+                        msg = Float64()
+                        msg.data = float(sim_time)
+                        self.sim_time_pub.publish(msg)
+                    continue
+
+                namespace = data.get('namespace', 'default')
                 if namespace not in self.active_namespaces:
                     self.setup_ros_topics(namespace)
-                    
                 self.publish_to_ros(data, namespace, topic)
             except zmq.error.Again:
                 if self.stop_event.wait(0.001):
@@ -247,11 +256,26 @@ class BskRosBridge(Node):
         except Exception as e:
             self.get_logger().error(f"Error publishing to ROS: {e}")
 
+    def _get_ros_time_from_bsk_sim_time(self, data):
+        """Helper: Convert bsk_sim_time (float, seconds) to ROS2 builtin_interfaces/Time."""
+        from builtin_interfaces.msg import Time as RosTime
+        bsk_sim_time = data.get("time", None)
+        if bsk_sim_time is not None:
+            secs = int(bsk_sim_time)
+            nsecs = int((bsk_sim_time - secs) * 1e9)
+            t = RosTime()
+            t.sec = secs
+            t.nanosec = nsecs
+            return t
+        else:
+            # fallback to current clock
+            return self.get_clock().now().to_msg()
+
     def convert_to_pose_stamped(self, data):
         """Convert BSK data dict to PoseStamped message."""
         try:
             msg = PoseStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.stamp = self._get_ros_time_from_bsk_sim_time(data)
             msg.header.frame_id = data.get('frame_id', 'map')
             position = data.get("position", [0.0, 0.0, 0.0])
             msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = position
@@ -266,7 +290,7 @@ class BskRosBridge(Node):
     def convert_to_twist_stamped(self, data):
         """Convert BSK data to TwistStamped message"""
         msg = TwistStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = self._get_ros_time_from_bsk_sim_time(data)
         msg.header.frame_id = data.get('frame_id', 'map')
         velocity = data.get("velocity", [0.0, 0.0, 0.0])
         angular_velocity = data.get("angular_velocity", [0.0, 0.0, 0.0])
@@ -277,7 +301,7 @@ class BskRosBridge(Node):
     def convert_to_inertia_stamped(self, data):
         """Convert BSK data to InertiaStamped message"""
         msg = InertiaStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = self._get_ros_time_from_bsk_sim_time(data)
         msg.header.frame_id = data.get('frame_id', 'body')
         msg.inertia.m = data.get("mass", 1.0)
         inertia = data.get("inertia", [1.0, 1.0, 1.0, 0.0, 0.0, 0.0])

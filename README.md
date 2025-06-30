@@ -101,7 +101,7 @@ For multiple spacecraft, use the dedicated multi-spacecraft example that runs al
 
 ```bash
 # Fixed 3 spacecraft example (test_sat1, test_sat2, test_sat3)
-python examples/ex_multi_spacecraft.py
+python examples/ex_ros_bridge_handler_multi.py
 ```
 
 This example demonstrates:
