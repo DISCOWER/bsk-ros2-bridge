@@ -1,10 +1,9 @@
 from Basilisk.architecture import sysModel, messaging
-from Basilisk.utilities import orbitalMotion, unitTestSupport as UAT, RigidBodyKinematics as RBK
+from Basilisk.utilities import RigidBodyKinematics as RBK
 import zmq
-import json
-import time
 import threading
-import numpy as np
+import time
+import json
 
 # Global variables should be avoided, but keeping for compatibility
 global delay_count
@@ -229,18 +228,17 @@ class RosBridgeHandler(sysModel.SysModel):
         if not self._check_bridge_health():
             return
 
-        # Read input messages
-        scStateInMsgBuffer = self.scStateInMsg()
-
-        # Publish simulation time to a unique ROS topic
+        # Publish sim time (special topic, always published)
         self._publish_sim_time(CurrentSimNanos)
 
-        # Publish spacecraft state to ROS2 (every UpdateState call for maximum frequency)
-        self._publish_spacecraft_state(CurrentSimNanos, scStateInMsgBuffer)
-        self._publish_spacecraft_velocity(CurrentSimNanos, scStateInMsgBuffer)
-        # TODO: Implement mass properties publishing
-        # self._publish_mass_properties(CurrentSimNanos, vehConfigMsgBuffer)
-            
+        # Read spacecraft state and publish as ROS2 messages
+        if self.scStateInMsg.isLinked():
+            scInMsgBuffer = self.scStateInMsg()
+            # Split SCStatesMsgPayload into ROS2 topics as defined in topics.yaml
+            self._publish_pose_inertial(CurrentSimNanos, scInMsgBuffer)
+            self._publish_velocity_inertial(CurrentSimNanos, scInMsgBuffer)
+            # Add more conversions as needed (e.g. noisy IMU, actuator outputs)
+
         # Receive and process control commands from ROS2
         force_cmd, torque_cmd = self._receive_control_commands()
         
@@ -282,42 +280,42 @@ class RosBridgeHandler(sysModel.SysModel):
         except Exception as e:
             self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing sim_time: {e}")
 
-    def _publish_spacecraft_state(self, CurrentSimNanos, scStateInMsgBuffer):
-        """Publish spacecraft position and attitude state."""
+    def _publish_pose_inertial(self, CurrentSimNanos, scInMsgBuffer):
+        # Convert SCStatesMsgPayload to geometry_msgs/PoseStamped dict
+        sigma = list(scInMsgBuffer.sigma_BN)
+        quat = RBK.MRP2EP(sigma)
+        msg = {
+            "namespace": self.namespace,
+            "topic": "/pose_inertial",
+            "frame_id": "inertial",
+            "position": list(scInMsgBuffer.r_BN_N),
+            "attitude": [quat[0], quat[1], quat[2], quat[3]],  # w, x, y, z
+            "time": float(CurrentSimNanos) * 1e-9
+        }
         try:
-            # Convert MRP to quaternion (w, x, y, z format)
-            quaternion = RBK.MRP2EP(scStateInMsgBuffer.sigma_BN)
+            self.send_socket.send_string(json.dumps(msg))
+        except Exception:
+            pass
 
-            state_msg = {
-                "namespace": self.namespace,
-                "topic": "/state",
-                "time": CurrentSimNanos * 1.0E-9,  # simulation time in seconds
-                "position": scStateInMsgBuffer.r_BN_N.tolist() if hasattr(scStateInMsgBuffer.r_BN_N, 'tolist') else list(scStateInMsgBuffer.r_BN_N),
-                "orientation": quaternion.tolist() if hasattr(quaternion, 'tolist') else list(quaternion),
-                "frame_id": "map"
-            }
-
-            self.send_socket.send_string(json.dumps(state_msg), flags=zmq.NOBLOCK)
-
-        except Exception as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing state: {e}")
-
-    def _publish_spacecraft_velocity(self, CurrentSimNanos, scStateInMsgBuffer):
-        """Publish spacecraft linear and angular velocity."""
+    def _publish_velocity_inertial(self, CurrentSimNanos, scInMsgBuffer):
+        # Convert SCStatesMsgPayload to geometry_msgs/TwistStamped dict
+        msg = {
+            "namespace": self.namespace,
+            "topic": "/velocity_inertial",
+            "frame_id": "inertial",
+            "velocity": list(scInMsgBuffer.v_BN_N),
+            "angular_velocity": list(scInMsgBuffer.omega_BN_B),
+            "time": float(CurrentSimNanos) * 1e-9
+        }
         try:
-            velocity_msg = {
-                "namespace": self.namespace,
-                "topic": "/velocity",
-                "time": CurrentSimNanos * 1.0E-9,  # simulation time in seconds
-                "linear": scStateInMsgBuffer.v_BN_N.tolist() if hasattr(scStateInMsgBuffer.v_BN_N, 'tolist') else list(scStateInMsgBuffer.v_BN_N),
-                "angular": scStateInMsgBuffer.omega_BN_B.tolist() if hasattr(scStateInMsgBuffer.omega_BN_B, 'tolist') else list(scStateInMsgBuffer.omega_BN_B),
-                "frame_id": f"{self.namespace.strip('/')}_body"
-            }
+            self.send_socket.send_string(json.dumps(msg))
+        except Exception:
+            pass
 
-            self.send_socket.send_string(json.dumps(velocity_msg), flags=zmq.NOBLOCK)
-
-        except Exception as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing velocity: {e}")
+    # Example: Add more methods for other sensors/actuators as needed
+    # def _publish_imu_data(self, ...):
+    #     # Convert IMU Basilisk message to ROS2 sensor_msgs/Imu dict
+    #     # Send with topic "/imu_data" etc.
 
     def _receive_control_commands(self):
         """Receive and parse control commands from ROS2."""

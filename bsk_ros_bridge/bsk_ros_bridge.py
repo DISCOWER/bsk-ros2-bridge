@@ -120,81 +120,6 @@ class BskRosBridge(Node):
         self.heartbeat_thread.start()
         self.get_logger().info("Bridge ZMQ sockets ready.")
 
-    def setup_ros_topics(self, namespace=None):
-        """ Setup ROS publishers/subscribers for a namespace. """
-        if namespace is None:
-            namespace = 'unknown'
-            
-        self.active_namespaces[namespace] = True
-        self.bridge_publishers[namespace] = {}
-        self.bridge_subscribers[namespace] = {}
-        
-        # Create publishers for this namespace (Basilisk -> ROS2)
-        for topic_config in self.config.get('publications', []):
-            topic_name = self._format_topic_name(namespace, topic_config['topic'])
-            try:
-                msg_type = self.get_msg_class(topic_config['type'])
-                publisher = self.create_publisher(msg_type, topic_name, 10)
-                self.bridge_publishers[namespace][topic_config['topic']] = {
-                    'publisher': publisher,
-                    'type': msg_type,
-                    'config': topic_config
-                }
-            except Exception as e:
-                self.get_logger().error(f"Failed to create publisher for {topic_name}: {e}")
-                continue
-            
-        # Create subscribers for this namespace (ROS2 -> Basilisk)
-        for topic_config in self.config.get('subscriptions', []):
-            topic_name = self._format_topic_name(namespace, topic_config['topic'])
-            try:
-                msg_type = self.get_msg_class(topic_config['type'])
-                # Fix lambda capture issue
-                def create_callback(ns, topic):
-                    return lambda msg: self.ros_to_basilisk_callback(msg, ns, topic)
-                
-                subscription = self.create_subscription(
-                    msg_type, topic_name,
-                    create_callback(namespace, topic_config['topic']),
-                    10
-                )
-                self.bridge_subscribers[namespace][topic_config['topic']] = {
-                    'subscription': subscription,
-                    'type': msg_type,
-                    'config': topic_config
-                }
-            except Exception as e:
-                self.get_logger().error(f"Failed to create subscriber for {topic_name}: {e}")
-                continue
-                
-        self.get_logger().info(f"Setup topics for namespace: {namespace}")
-
-    def _format_topic_name(self, namespace, topic):
-        """Format topic name with namespace, ensuring proper leading slash."""
-        if not topic.startswith('/'):
-            topic = '/' + topic
-        return f"/{namespace}{topic}"
-
-    def get_msg_class(self, type_str):
-        """Import and return ROS message class from type string like 'geometry_msgs::msg::PoseStamped'"""
-        if type_str in self._msg_type_cache:
-            return self._msg_type_cache[type_str]
-            
-        parts = type_str.split('::')
-        if len(parts) != 3:
-            raise ValueError(f"Invalid type string format: {type_str}")
-            
-        pkg_name = parts[0]
-        msg_name = parts[2]
-        try:
-            module = importlib.import_module(f"{pkg_name}.msg")
-            msg_class = getattr(module, msg_name)
-            self._msg_type_cache[type_str] = msg_class
-            return msg_class
-        except (ImportError, AttributeError) as e:
-            self.get_logger().error(f"Failed to import message type {type_str}: {e}")
-            raise
-
     def zmq_listener(self):
         """Thread: Listen for ZMQ messages and publish to ROS topics."""
         self.get_logger().debug("ZMQ listener thread started")
@@ -219,8 +144,11 @@ class BskRosBridge(Node):
                     continue
 
                 namespace = data.get('namespace', 'default')
-                if namespace not in self.active_namespaces:
-                    self.setup_ros_topics(namespace)
+                # Lazy topic creation: create publisher if not already present
+                if namespace not in self.bridge_publishers:
+                    self.bridge_publishers[namespace] = {}
+                if topic not in self.bridge_publishers[namespace]:
+                    self._create_publisher_for_topic(namespace, topic)
                 self.publish_to_ros(data, namespace, topic)
             except zmq.error.Again:
                 if self.stop_event.wait(0.001):
@@ -234,6 +162,30 @@ class BskRosBridge(Node):
                 self.get_logger().error(f"Unexpected error in ZMQ listener: {e}")
                 break
         self.get_logger().debug("ZMQ listener thread exiting")
+
+    def _create_publisher_for_topic(self, namespace, topic):
+        """Create a ROS2 publisher for the given topic if defined in config."""
+        # Find topic config in publications
+        topic_config = None
+        for pub in self.config.get('publications', []):
+            if pub['topic'] == topic:
+                topic_config = pub
+                break
+        if topic_config is None:
+            self.get_logger().warn(f"Topic {topic} not defined in publications config, skipping publisher creation.")
+            return
+        try:
+            msg_type = self.get_msg_class(topic_config['type'])
+            topic_name = self._format_topic_name(namespace, topic)
+            publisher = self.create_publisher(msg_type, topic_name, 10)
+            self.bridge_publishers[namespace][topic] = {
+                'publisher': publisher,
+                'type': msg_type,
+                'config': topic_config
+            }
+            self.get_logger().info(f"Created publisher for {topic_name} ({msg_type})")
+        except Exception as e:
+            self.get_logger().error(f"Failed to create publisher for {topic}: {e}")
 
     def publish_to_ros(self, data, namespace, topic):
         """Publish BSK data to the appropriate ROS topic."""
@@ -397,6 +349,35 @@ class BskRosBridge(Node):
         """Context manager exit with cleanup."""
         self.shutdown()
         return False  # Don't suppress exceptions
+
+    def get_msg_class(self, type_str):
+        """
+        Import and return ROS message class from type string like 'geometry_msgs::msg::PoseStamped'
+        """
+        if type_str in self._msg_type_cache:
+            return self._msg_type_cache[type_str]
+        parts = type_str.split('::')
+        if len(parts) != 3:
+            raise ValueError(f"Invalid type string format: {type_str}")
+        pkg_name = parts[0]
+        msg_name = parts[2]
+        try:
+            module = importlib.import_module(f"{pkg_name}.msg")
+            msg_class = getattr(module, msg_name)
+            self._msg_type_cache[type_str] = msg_class
+            return msg_class
+        except (ImportError, AttributeError) as e:
+            self.get_logger().error(f"Failed to import message type {type_str}: {e}")
+            raise
+
+    def _format_topic_name(self, namespace, topic):
+        """
+        Format topic name with namespace, ensuring proper leading slash.
+        E.g. namespace='test_sat1', topic='/pose_inertial' -> '/test_sat1/pose_inertial'
+        """
+        if not topic.startswith('/'):
+            topic = '/' + topic
+        return f"/{namespace}{topic}"
 
 def main(args=None):
     """Main entry point with improved error handling."""

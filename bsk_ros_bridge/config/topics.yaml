@@ -7,13 +7,21 @@
 
 # Topics published by the bridge (Basilisk -> ROS2)
 publications:
-  - topic: /state
+  - topic: /pose_inertial
     type: geometry_msgs::msg::PoseStamped
-    description: "Spacecraft position and attitude"
+    description: "Spacecraft position and attitude in global frame"
 
-  - topic: /velocity
+  - topic: /velocity_inertial
     type: geometry_msgs::msg::TwistStamped
-    description: "Spacecraft linear and angular velocity"
+    description: "Spacecraft linear and angular velocity in global frame"
+
+  - topic: /pose_hill
+    type: geometry_msgs::msg::PoseStamped
+    description: "Spacecraft position and attitude in Hill frame"
+
+  - topic: /velocity_hill
+    type: geometry_msgs::msg::TwistStamped
+    description: "Spacecraft linear and angular velocity in Hill frame"
 
   - topic: /mass_properties
     type: geometry_msgs::msg::InertiaStamped
