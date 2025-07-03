@@ -1,9 +1,8 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, WrenchStamped, TwistStamped, Vector3Stamped, InertiaStamped
+from bsk_msgs.msg import *
 from std_msgs.msg import Float64
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
-import zmq, yaml,json, threading, os, time, importlib
+import zmq, json, threading, os, time, importlib, inspect
 from ament_index_python.packages import get_package_share_directory
 
 # Constants
@@ -16,38 +15,27 @@ HEARTBEAT_INTERVAL_SEC = 0.1         # Heartbeat ping interval (100ms)
 class BskRosBridge(Node):
     """
     ROS2 node bridging Basilisk (via ZMQ) and ROS2 topics.
-    Handles dynamic namespace/topic setup, ZMQ communication, and robust shutdown.
+    Automatically handles BSK message types and creates topics dynamically.
     """
-    def __init__(self, config_path=None, sub_port=DEFAULT_SUB_PORT, pub_port=DEFAULT_PUB_PORT, 
+    _field_mapping_cache = {}  # Cache for lowercase field name mapping per message type
+
+    def __init__(self, sub_port=DEFAULT_SUB_PORT, pub_port=DEFAULT_PUB_PORT, 
                  heartbeat_port=DEFAULT_HEARTBEAT_PORT, timeout=DEFAULT_TIMEOUT):
         super().__init__('bsk_ros_bridge')
         self.stop_event = threading.Event()
 
-        if config_path is None:
-            config_path = self.declare_parameter(
-                'config_path',
-                os.path.join(
-                    get_package_share_directory('bsk_ros_bridge'), 'config', 'topics.yaml'
-                )
-            ).get_parameter_value().string_value
-
-        self.config = self.load_config(config_path)
         self.sub_port = sub_port
         self.pub_port = pub_port
         self.heartbeat_port = heartbeat_port
         self.timeout = timeout
-        self.active_namespaces = {}
         self.bridge_publishers = {}
         self.bridge_subscribers = {}
         self.zmq_context = zmq.Context()
         self._msg_type_cache = {}  # Cache for message types
+        self._bsk_msg_types = {}   # Cache for BSK message types by name
         
-        # Message conversion registry for efficiency
-        self._converter_registry = {
-            PoseStamped: self.convert_to_pose_stamped,
-            TwistStamped: self.convert_to_twist_stamped,
-            InertiaStamped: self.convert_to_inertia_stamped
-        }
+        # Discover all BSK message types
+        self._discover_bsk_message_types()
 
         # Set up ZMQ
         self.setup_zmq()
@@ -56,37 +44,111 @@ class BskRosBridge(Node):
         self.get_logger().info("Bridge initialised successfully.")
         self.sim_time_pub = self.create_publisher(Float64, '/bsk_sim_time', 10)
 
-    def load_config(self, yaml_path):
-        """Load YAML config for topic mapping."""
+    def _discover_bsk_message_types(self):
+        """Discover all BSK message types from bsk_msgs.msg module."""
         try:
-            with open(yaml_path, 'r') as f:
-                config = yaml.safe_load(f)
+            import bsk_msgs.msg as bsk_msgs
+            for name in dir(bsk_msgs):
+                # Skip built-in attributes
+                if name.startswith('_'):
+                    continue
+                    
+                obj = getattr(bsk_msgs, name)
+                # Look for classes ending with 'MsgPayload'
+                if inspect.isclass(obj) and name.endswith('MsgPayload'):
+                    # Store both the class and its type name
+                    self._bsk_msg_types[name] = obj
+                    self.get_logger().debug(f"Discovered BSK message type: {name}")
+            self.get_logger().info(f"Discovered {len(self._bsk_msg_types)} BSK message types")
+        except ImportError as e:
+            self.get_logger().error(f"Failed to import bsk_msgs: {e}")
+            raise
+
+    def _bsk_type_to_topic_name(self, bsk_type_name):
+        """
+        Convert BSK message type to snake_case topic name.
+        E.g. 'SCStatesMsgPayload' -> 'sc_states'
+        E.g. 'THRArrayCmdForceMsgPayload' -> 'thr_array_cmd_force'
+        """
+        # Remove 'MsgPayload' suffix if present
+        if bsk_type_name.endswith('MsgPayload'):
+            name = bsk_type_name[:-10]  # Remove 'MsgPayload'
+        else:
+            name = bsk_type_name
+        
+        # Convert CamelCase to snake_case
+        result = []
+        prev_char = ''
+        
+        for i, char in enumerate(name):
+            if char.isupper():
+                # Add underscore before uppercase if:
+                # 1. Not the first character AND
+                # 2. Previous character was lowercase OR next character is lowercase
+                if (i > 0 and 
+                    (prev_char.islower() or 
+                     (i + 1 < len(name) and name[i + 1].islower()))):
+                    result.append('_')
+                result.append(char.lower())
+            else:
+                result.append(char.lower())
+            prev_char = char
+        
+        return ''.join(result)
+
+    def _json_to_bsk_msg(self, json_data, msg_type):
+        """Convert JSON data to BSK message instance using reflection."""
+        try:
+            msg = msg_type()
+            msg_type_name = msg_type.__name__
+
+            # Use cached mapping if available
+            if msg_type_name not in self._field_mapping_cache:
+                bsk_field_mapping = {}
+                for field_name in msg.get_fields_and_field_types():
+                    bsk_field_mapping[field_name.lower()] = field_name
+                self._field_mapping_cache[msg_type_name] = bsk_field_mapping
+            else:
+                bsk_field_mapping = self._field_mapping_cache[msg_type_name]
+
+            # Set fields from JSON data
+            for json_field_name, field_value in json_data.items():
+                # Try to find the ROS2 field name (either direct match or via lowercase mapping)
+                ros_field_name = None
+                if hasattr(msg, json_field_name):
+                    ros_field_name = json_field_name
+                elif json_field_name.lower() in bsk_field_mapping:
+                    ros_field_name = bsk_field_mapping[json_field_name.lower()]
+                if ros_field_name and hasattr(msg, ros_field_name):
+                    try:
+                        setattr(msg, ros_field_name, field_value)
+                    except Exception:
+                        continue
+            return msg
+        except Exception as e:
+            self.get_logger().error(f"Error converting JSON to BSK message: {e}")
+            raise
+
+    def _bsk_msg_to_json(self, msg):
+        """Convert BSK message to JSON dict using reflection."""
+        try:
+            json_data = {}
             
-            # Validate configuration
-            self._validate_config(config)
-            return config
-        except FileNotFoundError:
-            self.get_logger().error(f"Configuration file not found: {yaml_path}")
+            # Get all fields from the message
+            for field_name in msg.get_fields_and_field_types():
+                if hasattr(msg, field_name):
+                    field_value = getattr(msg, field_name)
+                    
+                    # Convert numpy arrays to lists if necessary
+                    if hasattr(field_value, 'tolist'):
+                        json_data[field_name] = field_value.tolist()
+                    else:
+                        json_data[field_name] = field_value
+            
+            return json_data
+        except Exception as e:
+            self.get_logger().error(f"Error converting BSK message to JSON: {e}")
             raise
-        except yaml.YAMLError as e:
-            self.get_logger().error(f"Error parsing YAML config: {e}")
-            raise
-    
-    def _validate_config(self, config):
-        """Validate the loaded configuration."""
-        required_sections = ['publications', 'subscriptions']
-        for section in required_sections:
-            if section not in config:
-                self.get_logger().warn(f"Missing '{section}' section in config")
-                config[section] = []
-                
-        # Validate each topic configuration
-        for section in required_sections:
-            for i, topic_config in enumerate(config[section]):
-                if 'topic' not in topic_config:
-                    raise ValueError(f"Missing 'topic' in {section}[{i}]")
-                if 'type' not in topic_config:
-                    raise ValueError(f"Missing 'type' in {section}[{i}]")
 
     def setup_zmq(self):
         """Initialize ZMQ sockets for Basilisk <-> ROS2 communication and heartbeat."""
@@ -133,9 +195,8 @@ class BskRosBridge(Node):
                     self.get_logger().warn("Received non-dict message, skipping")
                     continue
 
-                topic = data.get('topic', '/state')
                 # Special handling for /bsk_sim_time (no namespace)
-                if topic == '/bsk_sim_time':
+                if 'sim_time' in data:
                     sim_time = data.get('sim_time', None)
                     if sim_time is not None:
                         msg = Float64()
@@ -143,13 +204,15 @@ class BskRosBridge(Node):
                         self.sim_time_pub.publish(msg)
                     continue
 
+                # Handle BSK message types
+                msg_type_name = data.get('msg_type', None)
                 namespace = data.get('namespace', 'default')
-                # Lazy topic creation: create publisher if not already present
-                if namespace not in self.bridge_publishers:
-                    self.bridge_publishers[namespace] = {}
-                if topic not in self.bridge_publishers[namespace]:
-                    self._create_publisher_for_topic(namespace, topic)
-                self.publish_to_ros(data, namespace, topic)
+                
+                if msg_type_name and msg_type_name in self._bsk_msg_types:
+                    self._handle_bsk_message(data, namespace, msg_type_name)
+                else:
+                    self.get_logger().warn(f"Unknown message type: {msg_type_name}")
+                    
             except zmq.error.Again:
                 if self.stop_event.wait(0.001):
                     break
@@ -163,129 +226,112 @@ class BskRosBridge(Node):
                 break
         self.get_logger().debug("ZMQ listener thread exiting")
 
-    def _create_publisher_for_topic(self, namespace, topic):
-        """Create a ROS2 publisher for the given topic if defined in config."""
-        # Find topic config in publications
-        topic_config = None
-        for pub in self.config.get('publications', []):
-            if pub['topic'] == topic:
-                topic_config = pub
-                break
-        if topic_config is None:
-            self.get_logger().warn(f"Topic {topic} not defined in publications config, skipping publisher creation.")
-            return
+    def _handle_bsk_message(self, data, namespace, msg_type_name):
+        """Handle incoming BSK message and publish to appropriate ROS topic."""
         try:
-            msg_type = self.get_msg_class(topic_config['type'])
-            topic_name = self._format_topic_name(namespace, topic)
-            publisher = self.create_publisher(msg_type, topic_name, 10)
-            self.bridge_publishers[namespace][topic] = {
-                'publisher': publisher,
-                'type': msg_type,
-                'config': topic_config
-            }
-            self.get_logger().info(f"Created publisher for {topic_name} ({msg_type})")
-        except Exception as e:
-            self.get_logger().error(f"Failed to create publisher for {topic}: {e}")
-
-    def publish_to_ros(self, data, namespace, topic):
-        """Publish BSK data to the appropriate ROS topic."""
-        try:
-            if namespace not in self.bridge_publishers or topic not in self.bridge_publishers[namespace]:
-                self.get_logger().warn(f"No publisher for {namespace}{topic}")
-                return
-                
-            pub_info = self.bridge_publishers[namespace][topic]
-            msg_type = pub_info['type']
+            # Use topic name from message if provided, otherwise convert from message type
+            topic_name = data.get('topic_name')
+            if topic_name is None:
+                topic_name = self._bsk_type_to_topic_name(msg_type_name)
             
-            # Use converter registry for efficiency
-            converter = self._converter_registry.get(msg_type)
-            if converter:
-                ros_msg = converter(data)
-                pub_info['publisher'].publish(ros_msg)
-            else:
-                self.get_logger().warn(f"Unsupported message type: {msg_type}")
+            full_topic_name = f"/{namespace}/bsk/out/{topic_name}"
+            
+            # Create publisher if not exists
+            if namespace not in self.bridge_publishers:
+                self.bridge_publishers[namespace] = {}
+                # Initialize subscribers dict for this namespace
+                if namespace not in self.bridge_subscribers:
+                    self.bridge_subscribers[namespace] = {}
+            
+            if topic_name not in self.bridge_publishers[namespace]:
+                msg_type = self._bsk_msg_types[msg_type_name]
+                publisher = self.create_publisher(msg_type, full_topic_name, 10)
+                self.bridge_publishers[namespace][topic_name] = {
+                    'publisher': publisher,
+                    'type': msg_type
+                }
+                self.get_logger().info(f"Created publisher for {full_topic_name} ({msg_type_name})")
+            
+            # Convert JSON to BSK message and publish
+            pub_info = self.bridge_publishers[namespace][topic_name]
+            bsk_msg = self._json_to_bsk_msg(data, pub_info['type'])
+            pub_info['publisher'].publish(bsk_msg)
+            
+        except Exception as e:
+            self.get_logger().error(f"Error handling BSK message {msg_type_name}: {e}")
+
+    def create_bsk_subscribers(self, namespace, msg_type_name):
+        """Create a single BSK subscriber if it doesn't exist yet."""
+        if namespace not in self.bridge_subscribers:
+            self.bridge_subscribers[namespace] = {}
+            
+        topic_name = self._bsk_type_to_topic_name(msg_type_name)
+        
+        # Only create if it doesn't exist
+        if topic_name not in self.bridge_subscribers[namespace]:
+            if msg_type_name in self._bsk_msg_types:
+                msg_type = self._bsk_msg_types[msg_type_name]
+                full_topic_name = f"/{namespace}/bsk/in/{topic_name}"
                 
-        except Exception as e:
-            self.get_logger().error(f"Error publishing to ROS: {e}")
+                # Create callback that captures the message type name
+                def create_callback(msg_type_name, namespace):
+                    def callback(msg):
+                        self.ros_to_basilisk_callback(msg, namespace, msg_type_name)
+                    return callback
+                
+                try:
+                    subscriber = self.create_subscription(
+                        msg_type,
+                        full_topic_name,
+                        create_callback(msg_type_name, namespace),
+                        10
+                    )
+                    
+                    self.bridge_subscribers[namespace][topic_name] = subscriber
+                    self.get_logger().info(f"Created subscriber for {full_topic_name} ({msg_type_name})")
+                    return subscriber
+                except Exception as e:
+                    self.get_logger().debug(f"Could not create subscriber for {full_topic_name}: {e}")
+                    return None
+        
+        return self.bridge_subscribers[namespace].get(topic_name)
 
-    def _get_ros_time_from_bsk_sim_time(self, data):
-        """Helper: Convert bsk_sim_time (float, seconds) to ROS2 builtin_interfaces/Time."""
-        from builtin_interfaces.msg import Time as RosTime
-        bsk_sim_time = data.get("time", None)
-        if bsk_sim_time is not None:
-            secs = int(bsk_sim_time)
-            nsecs = int((bsk_sim_time - secs) * 1e9)
-            t = RosTime()
-            t.sec = secs
-            t.nanosec = nsecs
-            return t
-        else:
-            # fallback to current clock
-            return self.get_clock().now().to_msg()
+    def create_bsk_subscribers(self, namespace):
+        """Legacy method - now just initializes the namespace dict."""
+        if namespace not in self.bridge_subscribers:
+            self.bridge_subscribers[namespace] = {}
+            self.get_logger().debug(f"Initialized subscriber dict for namespace: {namespace}")
 
-    def convert_to_pose_stamped(self, data):
-        """Convert BSK data dict to PoseStamped message."""
-        try:
-            msg = PoseStamped()
-            msg.header.stamp = self._get_ros_time_from_bsk_sim_time(data)
-            msg.header.frame_id = data.get('frame_id', 'map')
-            position = data.get("position", [0.0, 0.0, 0.0])
-            msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = position
-            attitude = data.get("attitude", [1.0, 0.0, 0.0, 0.0])
-            msg.pose.orientation.w, msg.pose.orientation.x, \
-            msg.pose.orientation.y, msg.pose.orientation.z = attitude
-            return msg
-        except Exception as e:
-            self.get_logger().error(f"Error converting to PoseStamped: {e}")
-            raise
+    def get_or_create_subscriber(self, namespace, msg_type_name):
+        """Get existing subscriber or create it if needed."""
+        topic_name = self._bsk_type_to_topic_name(msg_type_name)
+        
+        # Check if subscriber already exists
+        if (namespace in self.bridge_subscribers and 
+            topic_name in self.bridge_subscribers[namespace]):
+            return self.bridge_subscribers[namespace][topic_name]
+        
+        # Create it if it doesn't exist
+        return self.create_bsk_subscribers(namespace, msg_type_name)
 
-    def convert_to_twist_stamped(self, data):
-        """Convert BSK data to TwistStamped message"""
-        msg = TwistStamped()
-        msg.header.stamp = self._get_ros_time_from_bsk_sim_time(data)
-        msg.header.frame_id = data.get('frame_id', 'map')
-        velocity = data.get("velocity", [0.0, 0.0, 0.0])
-        angular_velocity = data.get("angular_velocity", [0.0, 0.0, 0.0])
-        msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z = velocity
-        msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z = angular_velocity
-        return msg
-
-    def convert_to_inertia_stamped(self, data):
-        """Convert BSK data to InertiaStamped message"""
-        msg = InertiaStamped()
-        msg.header.stamp = self._get_ros_time_from_bsk_sim_time(data)
-        msg.header.frame_id = data.get('frame_id', 'body')
-        msg.inertia.m = data.get("mass", 1.0)
-        inertia = data.get("inertia", [1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
-        msg.inertia.ixx, msg.inertia.iyy, msg.inertia.izz = inertia[:3]
-        msg.inertia.ixy, msg.inertia.ixz, msg.inertia.iyz = inertia[3:6]
-        return msg
-
-    def ros_to_basilisk_callback(self, msg, namespace, topic):
+    def ros_to_basilisk_callback(self, msg, namespace, msg_type_name):
         """Handle ROS messages and send them to Basilisk via ZMQ"""
         try:
+            # Convert BSK message to JSON
+            json_data = self._bsk_msg_to_json(msg)
+            
+            # Add metadata
             data = {
                 'namespace': namespace,
-                'topic': topic,
-                'timestamp': self.get_clock().now().nanoseconds
+                'msg_type': msg_type_name,
+                'timestamp': self.get_clock().now().nanoseconds,
+                **json_data
             }
             
-            # Convert different message types to JSON
-            if isinstance(msg, WrenchStamped):
-                data['force'] = [msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z]
-                data['torque'] = [msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z]
-            elif isinstance(msg, PoseStamped):
-                data['position'] = [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z]
-                data['attitude'] = [msg.pose.orientation.w, msg.pose.orientation.x, \
-                                  msg.pose.orientation.y, msg.pose.orientation.z]
-            elif isinstance(msg, Vector3Stamped):
-                data['vector'] = [msg.vector.x, msg.vector.y, msg.vector.z]
-            else:
-                self.get_logger().warn(f"Unhandled ROS message type: {type(msg)}")
-                return
             json_msg = json.dumps(data)
             self.pub_socket.send_string(json_msg)
-            self.get_logger().debug(f"Sent to Basilisk: {json_msg}")
+            self.get_logger().debug(f"Sent to Basilisk: {msg_type_name} for {namespace}")
+            
         except Exception as e:
             self.get_logger().error(f"Error in ROS to Basilisk callback: {e}")
 
@@ -369,15 +415,6 @@ class BskRosBridge(Node):
         except (ImportError, AttributeError) as e:
             self.get_logger().error(f"Failed to import message type {type_str}: {e}")
             raise
-
-    def _format_topic_name(self, namespace, topic):
-        """
-        Format topic name with namespace, ensuring proper leading slash.
-        E.g. namespace='test_sat1', topic='/pose_inertial' -> '/test_sat1/pose_inertial'
-        """
-        if not topic.startswith('/'):
-            topic = '/' + topic
-        return f"/{namespace}{topic}"
 
 def main(args=None):
     """Main entry point with improved error handling."""

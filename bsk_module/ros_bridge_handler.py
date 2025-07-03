@@ -4,6 +4,9 @@ import zmq
 import threading
 import time
 import json
+import inspect
+import importlib
+import pkgutil
 
 # Global variables should be avoided, but keeping for compatibility
 global delay_count
@@ -20,8 +23,9 @@ class RosBridgeHandler(sysModel.SysModel):
     
     This class bridges Basilisk spacecraft simulation with ROS2 by handling:
     - ZMQ communication between Basilisk and ROS2 bridge
-    - Publishing spacecraft state data (position, velocity, attitude, mass properties)
-    - Receiving control commands (forces and torques) from ROS2
+    - Automatic BSK message type discovery and conversion
+    - Publishing any BSK message payload to ROS2 topics
+    - Receiving any BSK message payload from ROS2 topics
     - Health monitoring via heartbeat mechanism
     - Graceful shutdown and resource cleanup
     
@@ -34,6 +38,8 @@ class RosBridgeHandler(sysModel.SysModel):
         bridge.scStateInMsg.subscribeTo(scStateMsg)
         # Add to simulation task...
     """
+    _field_mapping_cache = {}  # Cache for lowercase field name mapping per message type
+
     def __init__(self, namespace="spacecraft1", send_port=5550, receive_port=5551, 
                  heartbeat_port=5552, timeout=15):
         """
@@ -56,18 +62,15 @@ class RosBridgeHandler(sysModel.SysModel):
         self.receive_port = receive_port
         self.heartbeat_port = heartbeat_port
         
-        # Declare input messages (following Basilisk pattern)
-        self.scStateInMsg = messaging.SCStatesMsgReader()
-        # TODO: Add vehicle config support
-        # self.vehConfigInMsg = messaging.VehicleConfigMsgReader()
+        # Dynamic message handling
+        self.input_msg_readers = {}    # BSK message readers for inputs
+        self.output_msg_writers = {}   # BSK message writers for outputs
+        self.last_msg_data = {}        # Cache for last received message data
         
-        # Declare output messages (following Basilisk pattern)
-        self.cmdForceOutMsg = messaging.CmdForceBodyMsg()
-        self.cmdTorqueOutMsg = messaging.CmdTorqueBodyMsg()
+        # Discover available BSK message types
+        self._discover_bsk_messages()
         
         # State tracking variables
-        self.last_force_cmd = [0.0, 0.0, 0.0]
-        self.last_torque_cmd = [0.0, 0.0, 0.0]
         self.last_heartbeat_time = None
         self._running = True
         self._heartbeat_was_lost = False
@@ -81,6 +84,243 @@ class RosBridgeHandler(sysModel.SysModel):
         
         self._initialization_complete = True
         
+    def _discover_bsk_messages(self):
+        """Automatically discover all BSK message types in Basilisk.architecture.messaging."""
+        self.bsk_msg_types = {}
+
+        try:
+            import Basilisk.architecture.messaging as messaging_pkg
+            # Recursively walk all submodules in messaging
+            for finder, modname, ispkg in list(pkgutil.walk_packages(messaging_pkg.__path__, messaging_pkg.__name__ + ".")):
+                try:
+                    mod = importlib.import_module(modname)
+                    for name, obj in inspect.getmembers(mod, inspect.isclass):
+                        # Register all MsgPayload, Msg, and MsgReader classes in the messaging namespace
+                        if (name.endswith('MsgPayload') or name.endswith('Msg') or name.endswith('MsgReader')) and hasattr(obj, '__init__'):
+                            setattr(messaging, name, obj)
+                        # Only MsgPayload classes are used for type discovery
+                        if name.endswith('MsgPayload') and hasattr(obj, '__init__'):
+                            self.bsk_msg_types[name] = obj
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[{self.namespace}] ERROR: Could not import Basilisk.architecture.messaging: {e}")
+
+        print(f"[{self.namespace}] Discovered {len(self.bsk_msg_types)} BSK message types")
+
+    def add_bsk_msg_reader(self, msg_type_name, reader_name=None, topic_name=None):
+        """
+        Add a BSK message reader for automatic publishing to ROS2.
+        
+        Args:
+            msg_type_name (str): BSK message type name (e.g., 'SCStatesMsgPayload')
+            reader_name (str): Optional custom name for the reader
+            topic_name (str): Optional custom topic name (e.g., 'imu_1', 'imu_2')
+        """
+        if msg_type_name not in self.bsk_msg_types:
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                     f"Unknown BSK message type: {msg_type_name}")
+            else:
+                print(f"ERROR: Unknown BSK message type: {msg_type_name}")
+            return None
+            
+        reader_name = reader_name or f"{msg_type_name.lower()}_reader"
+        
+        # If no custom topic name provided, use automatic conversion
+        if topic_name is None:
+            topic_name = self._msg_type_to_topic_name(msg_type_name)
+        
+        # Automatically generate reader class name: 'SCStatesMsgPayload' -> 'SCStatesMsgReader'
+        try:
+            reader_class_name = msg_type_name.replace('MsgPayload', 'MsgReader')
+            reader_class = getattr(messaging, reader_class_name)
+            reader = reader_class()
+        except AttributeError:
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                     f"No reader found for message type: {msg_type_name} (tried {reader_class_name})")
+            else:
+                print(f"ERROR: No reader found for message type: {msg_type_name} (tried {reader_class_name})")
+            return None
+        
+        self.input_msg_readers[reader_name] = {
+            'reader': reader,
+            'msg_type': msg_type_name,
+            'topic_name': topic_name
+        }
+        
+        # Make reader accessible as module attribute
+        setattr(self, reader_name, reader)
+        
+        if hasattr(self, 'bskLogger') and self.bskLogger:
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                 f"Added BSK message reader: {reader_name} ({msg_type_name}) -> /{self.namespace}/bsk/out/{topic_name}")
+        else:
+            print(f"[{self.namespace}] Added BSK message reader: {reader_name} ({msg_type_name}) -> /{self.namespace}/bsk/out/{topic_name}")
+        return reader
+
+    def add_bsk_msg_writer(self, msg_type_name, writer_name=None, topic_name=None):
+        """
+        Add a BSK message writer for automatic subscription from ROS2.
+        
+        Args:
+            msg_type_name (str): BSK message type name (e.g., 'CmdForceBodyMsgPayload')
+            writer_name (str): Optional custom name for the writer
+            topic_name (str): Optional custom topic name (e.g., 'thruster_1', 'thruster_2')
+        """
+        if msg_type_name not in self.bsk_msg_types:
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                     f"Unknown BSK message type: {msg_type_name}")
+            else:
+                print(f"ERROR: Unknown BSK message type: {msg_type_name}")
+            return None
+            
+        writer_name = writer_name or f"{msg_type_name.lower()}_writer"
+        
+        # If no custom topic name provided, use automatic conversion
+        if topic_name is None:
+            topic_name = self._msg_type_to_topic_name(msg_type_name)
+        
+        # Automatically generate writer class name: 'CmdForceBodyMsgPayload' -> 'CmdForceBodyMsg'
+        try:
+            writer_class_name = msg_type_name.replace('MsgPayload', 'Msg')
+            writer_class = getattr(messaging, writer_class_name)
+            writer = writer_class()
+        except AttributeError:
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                     f"No writer found for message type: {msg_type_name} (tried {writer_class_name})")
+            else:
+                print(f"ERROR: No writer found for message type: {msg_type_name} (tried {writer_class_name})")
+            return None
+        
+        self.output_msg_writers[writer_name] = {
+            'writer': writer,
+            'msg_type': msg_type_name,
+            'topic_name': topic_name
+        }
+        
+        # Make writer accessible as module attribute  
+        setattr(self, writer_name, writer)
+        
+        if hasattr(self, 'bskLogger') and self.bskLogger:
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                 f"Added BSK message writer: {writer_name} ({msg_type_name}) <- /{self.namespace}/bsk/in/{topic_name}")
+        else:
+            print(f"[{self.namespace}] Added BSK message writer: {writer_name} ({msg_type_name}) <- /{self.namespace}/bsk/in/{topic_name}")
+        return writer
+
+    def _msg_type_to_topic_name(self, msg_type_name):
+        """
+        Convert BSK message type name to snake_case topic name.
+        E.g. 'SCStatesMsgPayload' -> 'sc_states'
+        E.g. 'THRArrayCmdForceMsgPayload' -> 'thr_array_cmd_force'
+        """
+        # Remove 'MsgPayload' suffix if present
+        if msg_type_name.endswith('MsgPayload'):
+            name = msg_type_name[:-10]  # Remove 'MsgPayload'
+        else:
+            name = msg_type_name
+        
+        # Convert CamelCase to snake_case with proper handling of consecutive uppercase
+        result = []
+        prev_char = ''
+        
+        for i, char in enumerate(name):
+            if char.isupper():
+                # Add underscore before uppercase if:
+                # 1. Not the first character AND
+                # 2. Previous character was lowercase OR next character is lowercase
+                if (i > 0 and 
+                    (prev_char.islower() or 
+                     (i + 1 < len(name) and name[i + 1].islower()))):
+                    result.append('_')
+                result.append(char.lower())
+            else:
+                result.append(char.lower())
+            prev_char = char
+        
+        return ''.join(result)
+
+    def _bsk_msg_to_json(self, msg_payload, msg_type_name):
+        """Convert BSK message payload to JSON dict."""
+        json_data = {}
+        
+        # SWIG attributes to skip 
+        swig_attrs_to_skip = {'this', 'thisown'}
+        
+        # Get all attributes from the message payload, excluding SWIG internals
+        for attr_name in dir(msg_payload):
+            if (not attr_name.startswith('_') and 
+                attr_name not in swig_attrs_to_skip and
+                not callable(getattr(msg_payload, attr_name, None))):
+                try:
+                    attr_value = getattr(msg_payload, attr_name)
+                    
+                    # Convert BSK field name to lowercase for ROS2 compatibility
+                    ros2_field_name = attr_name.lower()
+                    
+                    # Convert different types to JSON-serializable format
+                    if isinstance(attr_value, (list, tuple)):
+                        json_data[ros2_field_name] = list(attr_value)
+                    elif hasattr(attr_value, 'tolist'):  # numpy arrays
+                        json_data[ros2_field_name] = attr_value.tolist()
+                    elif isinstance(attr_value, (int, float, str, bool)):
+                        json_data[ros2_field_name] = attr_value
+                    elif attr_value is None:
+                        json_data[ros2_field_name] = None
+                    else:
+                        # Skip non-serializable objects (like SWIG objects)
+                        continue
+                except Exception as e:
+                    # Skip attributes that can't be accessed or serialized
+                    continue
+                    
+        return json_data
+
+    def _json_to_bsk_msg(self, json_data, msg_type_name):
+        """Convert JSON dict to BSK message payload."""
+        msg_payload_class = self.bsk_msg_types[msg_type_name]
+        msg_payload = msg_payload_class()
+        
+        # Use cached mapping if available
+        if msg_type_name not in self._field_mapping_cache:
+            bsk_field_mapping = {}
+            for attr_name in dir(msg_payload):
+                if (not attr_name.startswith('_') and 
+                    not callable(getattr(msg_payload, attr_name, None))):
+                    bsk_field_mapping[attr_name.lower()] = attr_name
+            self._field_mapping_cache[msg_type_name] = bsk_field_mapping
+        else:
+            bsk_field_mapping = self._field_mapping_cache[msg_type_name]
+        
+        # Set attributes from JSON data
+        for json_field_name, attr_value in json_data.items():
+            # Skip metadata fields
+            if json_field_name in ['namespace', 'msg_type', 'topic_name', 'time', 'timestamp']:
+                continue
+                
+            # Try to find the BSK field name (either direct match or via lowercase mapping)
+            bsk_field_name = None
+            if hasattr(msg_payload, json_field_name):
+                bsk_field_name = json_field_name
+            elif json_field_name.lower() in bsk_field_mapping:
+                bsk_field_name = bsk_field_mapping[json_field_name.lower()]
+            
+            if bsk_field_name and hasattr(msg_payload, bsk_field_name):
+                try:
+                    setattr(msg_payload, bsk_field_name, attr_value)
+                except Exception as e:
+                    if hasattr(self, 'bskLogger') and self.bskLogger:
+                        self.bskLogger.bskLog(sysModel.BSK_WARNING, 
+                                             f"Failed to set {bsk_field_name}: {e}")
+                    else:
+                        print(f"WARNING: Failed to set {bsk_field_name}: {e}")
+                    
+        return msg_payload
+
     def _setup_zmq_communication(self):
         """Setup all ZMQ sockets and communication channels."""
         global _shared_context, _shared_sockets
@@ -186,29 +426,26 @@ class RosBridgeHandler(sysModel.SysModel):
             CurrentSimNanos (int): Current simulation time in nanoseconds
         """
         # Validate message connections - this follows Basilisk best practices
-        if not self.scStateInMsg.isLinked():
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, 
-                                 "RosBridgeHandler.scStateInMsg is not connected.")
-            
-        # TODO: Add vehicle config validation when implemented
-        # if not self.vehConfigInMsg.isLinked():
-        #     self.bskLogger.bskLog(sysModel.BSK_ERROR, "RosBridgeHandler.vehConfigInMsg is not connected.")
-        
-        # Reset state variables
-        self.last_force_cmd = [0.0, 0.0, 0.0]
-        self.last_torque_cmd = [0.0, 0.0, 0.0]
+        for reader_name, reader_info in self.input_msg_readers.items():
+            if not reader_info['reader'].isLinked():
+                if hasattr(self, 'bskLogger') and self.bskLogger:
+                    self.bskLogger.bskLog(sysModel.BSK_WARNING, 
+                                         f"Reader {reader_name} is not connected.")
+                else:
+                    print(f"WARNING: Reader {reader_name} is not connected.")
         
         # Initialize output messages to zero state (Basilisk best practice)
-        forceOutMsgBuffer = messaging.CmdForceBodyMsgPayload()
-        forceOutMsgBuffer.forceRequestBody = [0.0, 0.0, 0.0]
-        self.cmdForceOutMsg.write(forceOutMsgBuffer, CurrentSimNanos, self.moduleID)
-        
-        torqueOutMsgBuffer = messaging.CmdTorqueBodyMsgPayload()
-        torqueOutMsgBuffer.torqueRequestBody = [0.0, 0.0, 0.0]
-        self.cmdTorqueOutMsg.write(torqueOutMsgBuffer, CurrentSimNanos, self.moduleID)
-        
-        self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                             f"Reset complete for RosBridgeHandler namespace: {self.namespace}")
+        for writer_name, writer_info in self.output_msg_writers.items():
+            msg_type_name = writer_info['msg_type']
+            msg_payload_class = self.bsk_msg_types[msg_type_name]
+            zero_payload = msg_payload_class()
+            writer_info['writer'].write(zero_payload, CurrentSimNanos, self.moduleID)
+            
+        if hasattr(self, 'bskLogger') and self.bskLogger:
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                 f"Reset complete for RosBridgeHandler namespace: {self.namespace}")
+        else:
+            print(f"[{self.namespace}] Reset complete for RosBridgeHandler")
         return
 
     def UpdateState(self, CurrentSimNanos):
@@ -231,29 +468,24 @@ class RosBridgeHandler(sysModel.SysModel):
         # Publish sim time (special topic, always published)
         self._publish_sim_time(CurrentSimNanos)
 
-        # Read spacecraft state and publish as ROS2 messages
-        if self.scStateInMsg.isLinked():
-            scInMsgBuffer = self.scStateInMsg()
-            # Split SCStatesMsgPayload into ROS2 topics as defined in topics.yaml
-            self._publish_pose_inertial(CurrentSimNanos, scInMsgBuffer)
-            self._publish_velocity_inertial(CurrentSimNanos, scInMsgBuffer)
-            # Add more conversions as needed (e.g. noisy IMU, actuator outputs)
+        # Process all input message readers and publish to ROS2
+        for reader_name, reader_info in self.input_msg_readers.items():
+            if reader_info['reader'].isLinked():
+                msg_payload = reader_info['reader']()
+                self._publish_bsk_message(CurrentSimNanos, msg_payload, reader_info['msg_type'])
 
-        # Receive and process control commands from ROS2
-        force_cmd, torque_cmd = self._receive_control_commands()
-        
-        # Update output messages if commands changed
-        self._update_force_output(force_cmd, CurrentSimNanos)
-        self._update_torque_output(torque_cmd, CurrentSimNanos)
+        # Receive and process commands from ROS2
+        self._receive_and_process_commands(CurrentSimNanos)
         
         # Periodic logging (once per second to avoid performance impact)
         # Following Basilisk pattern for module logging
         if CurrentSimNanos % int(1e9) == 0:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                 f"RosBridgeHandler [{self.namespace}] Update at {CurrentSimNanos * 1.0E-9:.3f}s")
-            self.bskLogger.bskLog(sysModel.BSK_DEBUG, 
-                                 f"Force Command: {force_cmd}, Torque Command: {torque_cmd}")
-            
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                     f"RosBridgeHandler [{self.namespace}] Update at {CurrentSimNanos * 1.0E-9:.3f}s")
+            else:
+                print(f"[{self.namespace}] RosBridgeHandler Update at {CurrentSimNanos * 1.0E-9:.3f}s")
+
     def _check_bridge_health(self):
         """Check if bridge heartbeat is healthy."""
         # Use simulation time for logging, but keep wall time for heartbeat timeout
@@ -270,101 +502,93 @@ class RosBridgeHandler(sysModel.SysModel):
             return True
             
     def _publish_sim_time(self, CurrentSimNanos):
-        """Publish simulation time to a unique ROS topic for synchronization."""
+        """Publish simulation time to ROS2."""
         try:
             sim_time_msg = {
-                "topic": "/bsk_sim_time",
                 "sim_time": CurrentSimNanos * 1.0E-9  # seconds
             }
             self.send_socket.send_string(json.dumps(sim_time_msg), flags=zmq.NOBLOCK)
         except Exception as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing sim_time: {e}")
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing sim_time: {e}")
+            else:
+                print(f"ERROR: Error publishing sim_time: {e}")
 
-    def _publish_pose_inertial(self, CurrentSimNanos, scInMsgBuffer):
-        # Convert SCStatesMsgPayload to geometry_msgs/PoseStamped dict
-        sigma = list(scInMsgBuffer.sigma_BN)
-        quat = RBK.MRP2EP(sigma)
-        msg = {
-            "namespace": self.namespace,
-            "topic": "/pose_inertial",
-            "frame_id": "inertial",
-            "position": list(scInMsgBuffer.r_BN_N),
-            "attitude": [quat[0], quat[1], quat[2], quat[3]],  # w, x, y, z
-            "time": float(CurrentSimNanos) * 1e-9
-        }
+    def _publish_bsk_message(self, CurrentSimNanos, msg_payload, msg_type_name):
+        """Publish any BSK message to ROS2."""
         try:
-            self.send_socket.send_string(json.dumps(msg))
-        except Exception:
-            pass
-
-    def _publish_velocity_inertial(self, CurrentSimNanos, scInMsgBuffer):
-        # Convert SCStatesMsgPayload to geometry_msgs/TwistStamped dict
-        msg = {
-            "namespace": self.namespace,
-            "topic": "/velocity_inertial",
-            "frame_id": "inertial",
-            "velocity": list(scInMsgBuffer.v_BN_N),
-            "angular_velocity": list(scInMsgBuffer.omega_BN_B),
-            "time": float(CurrentSimNanos) * 1e-9
-        }
-        try:
-            self.send_socket.send_string(json.dumps(msg))
-        except Exception:
-            pass
-
-    # Example: Add more methods for other sensors/actuators as needed
-    # def _publish_imu_data(self, ...):
-    #     # Convert IMU Basilisk message to ROS2 sensor_msgs/Imu dict
-    #     # Send with topic "/imu_data" etc.
-
-    def _receive_control_commands(self):
-        """Receive and parse control commands from ROS2."""
-        try:
-            ros_msg = self.receive_socket.recv_string(flags=zmq.NOBLOCK)
-            command_data = json.loads(ros_msg)
+            # Find the topic name for this message type
+            topic_name = None
+            for reader_name, reader_info in self.input_msg_readers.items():
+                if reader_info['msg_type'] == msg_type_name:
+                    topic_name = reader_info['topic_name']
+                    break
             
-            # Extract force and torque commands
-            force_cmd = command_data.get("force", [0.0, 0.0, 0.0])
-            torque_cmd = command_data.get("torque", [0.0, 0.0, 0.0])
+            if topic_name is None:
+                # Fallback to automatic conversion if not found
+                topic_name = self._msg_type_to_topic_name(msg_type_name)
             
-            # Validate command format
-            if not (isinstance(force_cmd, list) and len(force_cmd) == 3):
-                raise ValueError(f"Invalid force command format: {force_cmd}")
-            if not (isinstance(torque_cmd, list) and len(torque_cmd) == 3):
-                raise ValueError(f"Invalid torque command format: {torque_cmd}")
-                
-            # Reset delay count on successful receive
-            global delay_count
-            delay_count = 0
+            # Convert BSK message to JSON
+            json_data = self._bsk_msg_to_json(msg_payload, msg_type_name)
             
-            return force_cmd, torque_cmd
+            # Add metadata for the bridge
+            msg = {
+                "namespace": self.namespace,
+                "msg_type": msg_type_name,
+                "topic_name": topic_name,
+                "time": float(CurrentSimNanos) * 1e-9,
+                **json_data
+            }
             
-        except zmq.Again:
-            # No new message available, return last known commands
-            return self.last_force_cmd, self.last_torque_cmd
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            self.bskLogger.bskLog(sysModel.BSK_WARNING, f"Error parsing control command: {e}")
-            return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+            self.send_socket.send_string(json.dumps(msg), flags=zmq.NOBLOCK)
+            
         except Exception as e:
-            self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Unexpected error receiving commands: {e}")
-            return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
-            
-    def _update_force_output(self, force_cmd, CurrentSimNanos):
-        """Update force output message if command changed."""
-        if force_cmd != self.last_force_cmd:
-            forceOutMsgBuffer = messaging.CmdForceBodyMsgPayload()
-            forceOutMsgBuffer.forceRequestBody = force_cmd
-            self.cmdForceOutMsg.write(forceOutMsgBuffer, CurrentSimNanos, self.moduleID)
-            self.last_force_cmd = force_cmd.copy() if isinstance(force_cmd, list) else force_cmd
-            
-    def _update_torque_output(self, torque_cmd, CurrentSimNanos):
-        """Update torque output message if command changed."""
-        if torque_cmd != self.last_torque_cmd:
-            torqueOutMsgBuffer = messaging.CmdTorqueBodyMsgPayload()
-            torqueOutMsgBuffer.torqueRequestBody = torque_cmd
-            self.cmdTorqueOutMsg.write(torqueOutMsgBuffer, CurrentSimNanos, self.moduleID)
-            self.last_torque_cmd = torque_cmd.copy() if isinstance(torque_cmd, list) else torque_cmd
-            
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                     f"Error publishing {msg_type_name}: {e}")
+            else:
+                print(f"ERROR: Error publishing {msg_type_name}: {e}")
+
+    def _receive_and_process_commands(self, CurrentSimNanos):
+        """Receive and process any BSK message commands from ROS2."""
+        try:
+            while True:  # Process all available messages
+                ros_msg = self.receive_socket.recv_string(flags=zmq.NOBLOCK)
+                command_data = json.loads(ros_msg)
+                
+                # Check if this message is for our namespace
+                if command_data.get('namespace') != self.namespace:
+                    continue
+                    
+                msg_type_name = command_data.get('msg_type')
+                if not msg_type_name:
+                    continue
+                
+                # Find appropriate writer for this message type
+                writer_info = None
+                for writer_name, info in self.output_msg_writers.items():
+                    if info['msg_type'] == msg_type_name:
+                        writer_info = info
+                        break
+                
+                if writer_info:
+                    # Convert JSON to BSK message and write
+                    msg_payload = self._json_to_bsk_msg(command_data, msg_type_name)
+                    writer_info['writer'].write(msg_payload, CurrentSimNanos, self.moduleID)
+                    
+                    # Cache the data
+                    self.last_msg_data[msg_type_name] = command_data
+                    
+        except zmq.Again:
+            # No more messages available
+            pass
+        except Exception as e:
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                     f"Error processing commands: {e}")
+            else:
+                print(f"ERROR: Error processing commands: {e}")
+
     def shutdown(self):
         """
         Graceful shutdown of the bridge handler.
@@ -387,12 +611,12 @@ class RosBridgeHandler(sysModel.SysModel):
             if hasattr(self, 'heartbeat_sub'):
                 self.heartbeat_sub.close()
         except Exception as e:
-            if hasattr(self, 'bskLogger'):
+            if hasattr(self, 'bskLogger') and self.bskLogger:
                 self.bskLogger.bskLog(sysModel.BSK_WARNING, f"Error during socket cleanup: {e}")
             else:
                 print(f"Warning: Error during socket cleanup: {e}")
         
-        if hasattr(self, 'bskLogger'):
+        if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
                                  f"RosBridgeHandler [{self.namespace}] shutdown complete")
         else:
@@ -408,21 +632,10 @@ class RosBridgeHandler(sysModel.SysModel):
         global delay_count
         print(f'[{self.namespace}] Delayed count for actuation messages: {delay_count}')
         
-        if hasattr(self, 'bskLogger'):
+        if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Shutdown initiated")
         else:
             print(f"[{self.namespace}] Shutdown initiated")
         
         self.shutdown()
         return True
-        
-    # Legacy method names for backward compatibility
-    def Port_Clean_Exit(self):
-        """Legacy method - use shutdown() instead."""
-        print("Warning: Port_Clean_Exit() is deprecated, use shutdown() instead")
-        self.shutdown()
-        
-    def Kill_Bridge_Send(self):
-        """Legacy method - use send_kill_signal() instead."""
-        print("Warning: Kill_Bridge_Send() is deprecated, use send_kill_signal() instead")
-        return self.send_kill_signal()

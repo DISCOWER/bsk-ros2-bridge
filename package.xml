@@ -9,8 +9,7 @@
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>launch</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>pyyaml</exec_depend>
+  <exec_depend>bsk_msgs</exec_depend>
   <exec_depend>pyzmq</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
