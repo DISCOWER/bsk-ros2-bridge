@@ -72,9 +72,9 @@ class BasiliskDataProcessor(Node):
         force_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
         
         # Set dummy force values (Newtons) - replace with actual control law
-        force_msg.force_request_body[0] = 10.0 #np.random.uniform(-10.0, 10.0)
-        force_msg.force_request_body[1] = 0.0 #np.random.uniform(-10.0, 10.0)
-        force_msg.force_request_body[2] = 0.0 #np.random.uniform(-10.0, 10.0)
+        force_msg.forcerequestbody[0] = np.random.uniform(-10.0, 10.0)
+        force_msg.forcerequestbody[1] = np.random.uniform(-10.0, 10.0)
+        force_msg.forcerequestbody[2] = np.random.uniform(-10.0, 10.0)
         
         # Create a CmdTorqueBodyMsgPayload message
         torque_msg = CmdTorqueBodyMsgPayload()
@@ -83,9 +83,9 @@ class BasiliskDataProcessor(Node):
         torque_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
 
         # Set dummy torque values (Newton-meters) - replace with actual control law
-        torque_msg.torque_request_body[0] = 1. #np.random.uniform(-1.0, 1.0)
-        torque_msg.torque_request_body[1] = 0. #np.random.uniform(-1.0, 1.0)
-        torque_msg.torque_request_body[2] = 0. #np.random.uniform(-1.0, 1.0)
+        torque_msg.torquerequestbody[0] = np.random.uniform(-1.0, 1.0)
+        torque_msg.torquerequestbody[1] = np.random.uniform(-1.0, 1.0)
+        torque_msg.torquerequestbody[2] = np.random.uniform(-1.0, 1.0)
         
         # Publish the messages
         self.force_pub.publish(force_msg)
@@ -93,8 +93,8 @@ class BasiliskDataProcessor(Node):
         
         # Log sent commands
         self.get_logger().info(
-            f"Sent commands: F=[{force_msg.force_request_body[0]:.2f}, {force_msg.force_request_body[1]:.2f}, {force_msg.force_request_body[2]:.2f}] N, "
-            f"T=[{torque_msg.torque_request_body[0]:.2f}, {torque_msg.torque_request_body[1]:.2f}, {torque_msg.torque_request_body[2]:.2f}] Nm"
+            f"Sent commands: F=[{force_msg.forcerequestbody[0]:.2f}, {force_msg.forcerequestbody[1]:.2f}, {force_msg.forcerequestbody[2]:.2f}] N, "
+            f"T=[{torque_msg.torquerequestbody[0]:.2f}, {torque_msg.torquerequestbody[1]:.2f}, {torque_msg.torquerequestbody[2]:.2f}] Nm"
         )
 
 def main():

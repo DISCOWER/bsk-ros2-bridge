@@ -10,25 +10,10 @@ sys.path.append(os.path.join(path, '..'))
 from Basilisk.architecture import bskLogging
 from Basilisk.utilities import SimulationBaseClass, macros # general support file with common unit test functions
 from Basilisk.simulation import simSynch, spacecraft, extForceTorque
-from bsk_module.ros_bridge_handler import RosBridgeHandler
+from bsk_module.rosBridgeHandler import RosBridgeHandler
 from Basilisk.architecture import messaging
 import numpy as np
 from Basilisk.architecture import sysModel
-
-class CmdEchoBuffer(sysModel.SysModel):
-    def __init__(self):
-        super(CmdEchoBuffer, self).__init__()
-        self.cmdForceBodyInMsg = messaging.CmdForceBodyMsgReader()
-        self.cmdForceBodyOutMsg = messaging.CmdForceBodyMsg()
-
-    def Reset(self, CurrentSimNanos):
-        pass
-
-    def UpdateState(self, CurrentSimNanos):
-        if self.cmdForceBodyInMsg.isWritten():
-            input_msg = self.cmdForceBodyInMsg()
-            print(f"[EchoBuffer] <<< Read from rosHandlerModule.cmdForceBodyOutMsg: {input_msg.forceRequestBody}")
-            self.cmdForceBodyOutMsg.write(input_msg, CurrentSimNanos, self.moduleID)
 
 def test_RosBridgeHandlerAllTest(function):
     """rosHandlerModule Unit Test"""
@@ -86,19 +71,12 @@ def test_RosBridgeHandler(test_rate=0.01, sim_time=300., namespace="test_sat1"):
 
     # Add message readers/writers only if the types were discovered
     scstate_reader = rosHandlerModule.add_bsk_msg_reader('SCStatesMsgPayload', 'scStateInMsg', 'sc_states')
-    # force_reader = rosHandlerModule.add_bsk_msg_reader('CmdForceBodyMsgPayload', 'cmdForceBodyInMsg', 'cmd_force_body')
+    force_reader = rosHandlerModule.add_bsk_msg_reader('CmdForceBodyMsgPayload', 'cmdForceBodyInMsg', 'cmd_force_body')
+    torque_reader = rosHandlerModule.add_bsk_msg_reader('CmdTorqueBodyMsgPayload', 'cmdTorqueBodyInMsg', 'cmd_torque_body')
     
     # Add writers for command topics (receiving commands from ROS2)
     force_writer = rosHandlerModule.add_bsk_msg_writer('CmdForceBodyMsgPayload', 'cmdForceBodyOutMsg', 'cmd_force_body')
     torque_writer = rosHandlerModule.add_bsk_msg_writer('CmdTorqueBodyMsgPayload', 'cmdTorqueBodyOutMsg', 'cmd_torque_body')
-
-    # Echo Buffer Module
-    echoBufferModule = CmdEchoBuffer()
-    echoBufferModule.ModelTag = "echoBuffer"
-    echoBufferModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
-
-    force_echo_reader = rosHandlerModule.add_bsk_msg_reader('CmdForceBodyMsgPayload', 'cmdForceBodyEchoInMsg', 'cmd_force_body')
-    force_echo_reader.subscribeTo(echoBufferModule.cmdForceBodyOutMsg)
 
     # Create external force and torque rosHandlerModule to apply ROS commands
     extForceTorqueModule = extForceTorque.ExtForceTorque()
@@ -108,13 +86,13 @@ def test_RosBridgeHandler(test_rate=0.01, sim_time=300., namespace="test_sat1"):
 
     # Add spacecraft and rosHandlerModule to the simulation task
     scSim.AddModelToTask(scSimName, rosHandlerModule, 10)
-    scSim.AddModelToTask(scSimName, echoBufferModule, 5)
     scSim.AddModelToTask(scSimName, extForceTorqueModule, 1)
     scSim.AddModelToTask(scSimName, scObject, 0)
     
     # Connect spacecraft state output to bridge handler input
     rosHandlerModule.scStateInMsg.subscribeTo(scObject.scStateOutMsg)
-    # rosHandlerModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
+    rosHandlerModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
+    rosHandlerModule.cmdTorqueBodyInMsg.subscribeTo(rosHandlerModule.cmdTorqueBodyOutMsg)
 
     # Start simulation
     print(f"Initializing Basilisk simulation for namespace '{namespace}'...")

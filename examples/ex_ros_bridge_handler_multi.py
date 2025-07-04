@@ -9,7 +9,7 @@ sys.path.append(os.path.join(path, '..'))
 from Basilisk.architecture import messaging, bskLogging
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport
 from Basilisk.simulation import simSynch
-from bsk_module.ros_bridge_handler import RosBridgeHandler
+from bsk_module.rosBridgeHandler import RosBridgeHandler
 
 
 @pytest.mark.parametrize("function", ["test_MultiSpacecraft"])

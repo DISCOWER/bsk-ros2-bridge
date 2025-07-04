@@ -352,14 +352,7 @@ class BskRosBridge(Node):
             
             # Convert JSON to BSK message and publish
             pub_info = self.bridge_publishers[namespace][topic_name]
-            self.get_logger().info(f"JSON from BSK (cmd_force_body): {json.dumps(data)}")
             bsk_msg = self._json_to_bsk_msg(data, pub_info['type'])
-            if hasattr(bsk_msg, "force_request_body"):
-                self.get_logger().info(f"Converted ROS2 message: {bsk_msg.force_request_body}")
-            if hasattr(bsk_msg, "force_request_body"):
-                self.get_logger().info(f"Publishing to ROS2: {full_topic_name} - {bsk_msg.force_request_body}")
-            else:
-                self.get_logger().info(f"Publishing to ROS2: {full_topic_name}")
             pub_info['publisher'].publish(bsk_msg)
             
         except Exception as e:
