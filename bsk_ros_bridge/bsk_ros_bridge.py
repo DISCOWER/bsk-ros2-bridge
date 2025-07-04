@@ -113,6 +113,15 @@ class BskRosBridge(Node):
 
             # Set fields from JSON data
             for json_field_name, field_value in json_data.items():
+                # Special handling for ROS2 builtin_interfaces/Time stamp
+                if json_field_name == "stamp" and hasattr(msg, "stamp") and isinstance(field_value, dict):
+                    try:
+                        if hasattr(msg.stamp, "sec") and hasattr(msg.stamp, "nanosec"):
+                            msg.stamp.sec = int(field_value.get("sec", 0))
+                            msg.stamp.nanosec = int(field_value.get("nanosec", 0))
+                        continue
+                    except Exception:
+                        continue
                 # Try to find the ROS2 field name (either direct match or via lowercase mapping)
                 ros_field_name = None
                 if hasattr(msg, json_field_name):
@@ -121,8 +130,14 @@ class BskRosBridge(Node):
                     ros_field_name = bsk_field_mapping[json_field_name.lower()]
                 if ros_field_name and hasattr(msg, ros_field_name):
                     try:
-                        setattr(msg, ros_field_name, field_value)
-                    except Exception:
+                        # Ensure correct format for arrays (e.g., float64[3])
+                        attr_spec = msg.get_fields_and_field_types()[ros_field_name]
+                        if attr_spec.startswith('float64[') and isinstance(field_value, list):
+                            setattr(msg, ros_field_name, [float(x) for x in field_value])
+                        else:
+                            setattr(msg, ros_field_name, field_value)
+                    except Exception as e:
+                        self.get_logger().warn(f"Could not set {ros_field_name}: {e}")
                         continue
             return msg
         except Exception as e:
@@ -139,8 +154,14 @@ class BskRosBridge(Node):
                 if hasattr(msg, field_name):
                     field_value = getattr(msg, field_name)
                     
+                    # Special handling for builtin_interfaces/Time objects
+                    if hasattr(field_value, 'sec') and hasattr(field_value, 'nanosec'):
+                        json_data[field_name] = {
+                            'sec': int(field_value.sec),
+                            'nanosec': int(field_value.nanosec)
+                        }
                     # Convert numpy arrays to lists if necessary
-                    if hasattr(field_value, 'tolist'):
+                    elif hasattr(field_value, 'tolist'):
                         json_data[field_name] = field_value.tolist()
                     else:
                         json_data[field_name] = field_value
@@ -195,6 +216,11 @@ class BskRosBridge(Node):
                     self.get_logger().warn("Received non-dict message, skipping")
                     continue
 
+                # Handle subscription requests from BSK
+                if data.get('subscription_request', False):
+                    self._handle_subscription_request(data)
+                    continue
+
                 # Special handling for /bsk_sim_time (no namespace)
                 if 'sim_time' in data:
                     sim_time = data.get('sim_time', None)
@@ -226,6 +252,78 @@ class BskRosBridge(Node):
                 break
         self.get_logger().debug("ZMQ listener thread exiting")
 
+    def _handle_subscription_request(self, data):
+        """Handle subscription request from BSK and create ROS2 subscriber."""
+        try:
+            namespace = data.get('namespace', 'default')
+            msg_type_name = data.get('msg_type')
+            topic_name = data.get('topic_name')
+            request_id = data.get('request_id')
+            
+            if not all([namespace, msg_type_name, topic_name]):
+                self.get_logger().warn("Incomplete subscription request data")
+                return
+            
+            # Construct full topic name for subscription (BSK input topics)
+            full_topic_name = f"/{namespace}/bsk/in/{topic_name}"
+            
+            # Initialize namespace dict if needed
+            if namespace not in self.bridge_subscribers:
+                self.bridge_subscribers[namespace] = {}
+            
+            success = False
+            
+            # Only create subscriber if it doesn't exist
+            if topic_name not in self.bridge_subscribers[namespace]:
+                if msg_type_name in self._bsk_msg_types:
+                    msg_type = self._bsk_msg_types[msg_type_name]
+                    
+                    # Create callback that captures the message type name and namespace
+                    def create_callback(msg_type_name, namespace):
+                        def callback(msg):
+                            self.ros_to_basilisk_callback(msg, namespace, msg_type_name)
+                        return callback
+                    
+                    try:
+                        subscriber = self.create_subscription(
+                            msg_type,
+                            full_topic_name,
+                            create_callback(msg_type_name, namespace),
+                            10
+                        )
+                        
+                        self.bridge_subscribers[namespace][topic_name] = subscriber
+                        self.get_logger().info(f"Created subscriber for {full_topic_name} ({msg_type_name}) on request from BSK")
+                        success = True
+                        
+                    except Exception as e:
+                        self.get_logger().error(f"Could not create subscriber for {full_topic_name}: {e}")
+                else:
+                    self.get_logger().warn(f"Unknown BSK message type in subscription request: {msg_type_name}")
+            else:
+                self.get_logger().debug(f"Subscriber for {full_topic_name} already exists")
+                success = True  # Already exists, so consider it successful
+            
+            # Send confirmation back to BSK if request_id provided
+            if request_id and success:
+                confirmation = {
+                    "subscription_confirmation": True,
+                    "namespace": namespace,
+                    "msg_type": msg_type_name,
+                    "topic_name": topic_name,
+                    "request_id": request_id,
+                    "success": True
+                }
+                
+                try:
+                    self.pub_socket.send_string(json.dumps(confirmation))
+                    self.get_logger().debug(f"Sent subscription confirmation for {request_id}")
+                except Exception as e:
+                    self.get_logger().error(f"Failed to send subscription confirmation: {e}")
+                
+        except Exception as e:
+            self.get_logger().error(f"Error handling subscription request: {e}")
+
     def _handle_bsk_message(self, data, namespace, msg_type_name):
         """Handle incoming BSK message and publish to appropriate ROS topic."""
         try:
@@ -254,65 +352,18 @@ class BskRosBridge(Node):
             
             # Convert JSON to BSK message and publish
             pub_info = self.bridge_publishers[namespace][topic_name]
+            self.get_logger().info(f"JSON from BSK (cmd_force_body): {json.dumps(data)}")
             bsk_msg = self._json_to_bsk_msg(data, pub_info['type'])
+            if hasattr(bsk_msg, "force_request_body"):
+                self.get_logger().info(f"Converted ROS2 message: {bsk_msg.force_request_body}")
+            if hasattr(bsk_msg, "force_request_body"):
+                self.get_logger().info(f"Publishing to ROS2: {full_topic_name} - {bsk_msg.force_request_body}")
+            else:
+                self.get_logger().info(f"Publishing to ROS2: {full_topic_name}")
             pub_info['publisher'].publish(bsk_msg)
             
         except Exception as e:
             self.get_logger().error(f"Error handling BSK message {msg_type_name}: {e}")
-
-    def create_bsk_subscribers(self, namespace, msg_type_name):
-        """Create a single BSK subscriber if it doesn't exist yet."""
-        if namespace not in self.bridge_subscribers:
-            self.bridge_subscribers[namespace] = {}
-            
-        topic_name = self._bsk_type_to_topic_name(msg_type_name)
-        
-        # Only create if it doesn't exist
-        if topic_name not in self.bridge_subscribers[namespace]:
-            if msg_type_name in self._bsk_msg_types:
-                msg_type = self._bsk_msg_types[msg_type_name]
-                full_topic_name = f"/{namespace}/bsk/in/{topic_name}"
-                
-                # Create callback that captures the message type name
-                def create_callback(msg_type_name, namespace):
-                    def callback(msg):
-                        self.ros_to_basilisk_callback(msg, namespace, msg_type_name)
-                    return callback
-                
-                try:
-                    subscriber = self.create_subscription(
-                        msg_type,
-                        full_topic_name,
-                        create_callback(msg_type_name, namespace),
-                        10
-                    )
-                    
-                    self.bridge_subscribers[namespace][topic_name] = subscriber
-                    self.get_logger().info(f"Created subscriber for {full_topic_name} ({msg_type_name})")
-                    return subscriber
-                except Exception as e:
-                    self.get_logger().debug(f"Could not create subscriber for {full_topic_name}: {e}")
-                    return None
-        
-        return self.bridge_subscribers[namespace].get(topic_name)
-
-    def create_bsk_subscribers(self, namespace):
-        """Legacy method - now just initializes the namespace dict."""
-        if namespace not in self.bridge_subscribers:
-            self.bridge_subscribers[namespace] = {}
-            self.get_logger().debug(f"Initialized subscriber dict for namespace: {namespace}")
-
-    def get_or_create_subscriber(self, namespace, msg_type_name):
-        """Get existing subscriber or create it if needed."""
-        topic_name = self._bsk_type_to_topic_name(msg_type_name)
-        
-        # Check if subscriber already exists
-        if (namespace in self.bridge_subscribers and 
-            topic_name in self.bridge_subscribers[namespace]):
-            return self.bridge_subscribers[namespace][topic_name]
-        
-        # Create it if it doesn't exist
-        return self.create_bsk_subscribers(namespace, msg_type_name)
 
     def ros_to_basilisk_callback(self, msg, namespace, msg_type_name):
         """Handle ROS messages and send them to Basilisk via ZMQ"""

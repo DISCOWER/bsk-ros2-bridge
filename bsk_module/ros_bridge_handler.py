@@ -7,6 +7,8 @@ import json
 import inspect
 import importlib
 import pkgutil
+import numpy as np
+import re
 
 # Global variables should be avoided, but keeping for compatibility
 global delay_count
@@ -66,6 +68,10 @@ class RosBridgeHandler(sysModel.SysModel):
         self.input_msg_readers = {}    # BSK message readers for inputs
         self.output_msg_writers = {}   # BSK message writers for outputs
         self.last_msg_data = {}        # Cache for last received message data
+        
+        # Subscription handshaking
+        self.pending_subscriptions = {}  # Track pending subscription requests
+        self.confirmed_subscriptions = set()  # Track confirmed subscriptions
         
         # Discover available BSK message types
         self._discover_bsk_messages()
@@ -196,6 +202,7 @@ class RosBridgeHandler(sysModel.SysModel):
                 print(f"ERROR: No writer found for message type: {msg_type_name} (tried {writer_class_name})")
             return None
         
+        # Store only the writer
         self.output_msg_writers[writer_name] = {
             'writer': writer,
             'msg_type': msg_type_name,
@@ -205,12 +212,89 @@ class RosBridgeHandler(sysModel.SysModel):
         # Make writer accessible as module attribute  
         setattr(self, writer_name, writer)
         
+        # Send subscription request to bridge
+        self._send_subscription_request(msg_type_name, topic_name)
+        
         if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
                                  f"Added BSK message writer: {writer_name} ({msg_type_name}) <- /{self.namespace}/bsk/in/{topic_name}")
         else:
             print(f"[{self.namespace}] Added BSK message writer: {writer_name} ({msg_type_name}) <- /{self.namespace}/bsk/in/{topic_name}")
         return writer
+
+    def _send_subscription_request(self, msg_type_name, topic_name):
+        """Send subscription request to bridge for automatic subscriber creation."""
+        try:
+            request_id = f"{self.namespace}_{msg_type_name}_{topic_name}"
+            
+            subscription_request = {
+                "subscription_request": True,
+                "namespace": self.namespace,
+                "msg_type": msg_type_name,
+                "topic_name": topic_name,
+                "request_id": request_id
+            }
+            
+            # Track pending request
+            self.pending_subscriptions[request_id] = {
+                "msg_type": msg_type_name,
+                "topic_name": topic_name,
+                "attempts": 0,
+                "last_attempt": time.time()
+            }
+            
+            self.send_socket.send_string(json.dumps(subscription_request), flags=zmq.NOBLOCK)
+            
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                     f"Sent subscription request for {msg_type_name} -> /{self.namespace}/bsk/in/{topic_name} (ID: {request_id})")
+            else:
+                print(f"[{self.namespace}] Sent subscription request for {msg_type_name} -> /{self.namespace}/bsk/in/{topic_name} (ID: {request_id})")
+                
+        except Exception as e:
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                                     f"Error sending subscription request: {e}")
+            else:
+                print(f"ERROR: Error sending subscription request: {e}")
+
+    def _check_pending_subscriptions(self):
+        """Check for pending subscription requests and retry if needed."""
+        current_time = time.time()
+        max_attempts = 5
+        retry_interval = 2.0  # seconds
+        
+        for request_id, request_info in list(self.pending_subscriptions.items()):
+            if request_id in self.confirmed_subscriptions:
+                # Remove confirmed subscriptions from pending
+                del self.pending_subscriptions[request_id]
+                continue
+                
+            time_since_last = current_time - request_info["last_attempt"]
+            
+            if time_since_last > retry_interval:
+                if request_info["attempts"] < max_attempts:
+                    # Retry the subscription request
+                    request_info["attempts"] += 1
+                    request_info["last_attempt"] = current_time
+                    
+                    subscription_request = {
+                        "subscription_request": True,
+                        "namespace": self.namespace,
+                        "msg_type": request_info["msg_type"],
+                        "topic_name": request_info["topic_name"],
+                        "request_id": request_id
+                    }
+                    
+                    try:
+                        self.send_socket.send_string(json.dumps(subscription_request), flags=zmq.NOBLOCK)
+                        print(f"[{self.namespace}] Retrying subscription request {request_id} (attempt {request_info['attempts']}/{max_attempts})")
+                    except Exception as e:
+                        print(f"ERROR: Failed to retry subscription request {request_id}: {e}")
+                else:
+                    # Max attempts reached
+                    print(f"[{self.namespace}] WARNING: Subscription request {request_id} failed after {max_attempts} attempts")
+                    del self.pending_subscriptions[request_id]
 
     def _msg_type_to_topic_name(self, msg_type_name):
         """
@@ -244,8 +328,8 @@ class RosBridgeHandler(sysModel.SysModel):
         
         return ''.join(result)
 
-    def _bsk_msg_to_json(self, msg_payload, msg_type_name):
-        """Convert BSK message payload to JSON dict."""
+    def _bsk_msg_to_json(self, msg_payload, msg_type_name, CurrentSimNanos=None):
+        """Convert BSK message payload to JSON dict. Optionally add ROS2 timestamp."""
         json_data = {}
         
         # SWIG attributes to skip 
@@ -258,68 +342,73 @@ class RosBridgeHandler(sysModel.SysModel):
                 not callable(getattr(msg_payload, attr_name, None))):
                 try:
                     attr_value = getattr(msg_payload, attr_name)
-                    
-                    # Convert BSK field name to lowercase for ROS2 compatibility
                     ros2_field_name = attr_name.lower()
                     
                     # Convert different types to JSON-serializable format
                     if isinstance(attr_value, (list, tuple)):
                         json_data[ros2_field_name] = list(attr_value)
-                    elif hasattr(attr_value, 'tolist'):  # numpy arrays
+                    elif hasattr(attr_value, 'tolist'):
                         json_data[ros2_field_name] = attr_value.tolist()
                     elif isinstance(attr_value, (int, float, str, bool)):
                         json_data[ros2_field_name] = attr_value
                     elif attr_value is None:
                         json_data[ros2_field_name] = None
                     else:
-                        # Skip non-serializable objects (like SWIG objects)
                         continue
-                except Exception as e:
-                    # Skip attributes that can't be accessed or serialized
+                except Exception:
                     continue
-                    
+
+        # Add ROS2 timestamp if requested
+        if CurrentSimNanos is not None:
+            secs = int(CurrentSimNanos // 1_000_000_000)
+            nsecs = int(CurrentSimNanos % 1_000_000_000)
+            json_data['stamp'] = {'sec': secs, 'nanosec': nsecs}
+
         return json_data
 
+    def normalize_field_name(self, field_name):
+        """Normalize field names to lowercase, underscore-agnostic."""
+        return re.sub(r'_', '', field_name).lower()
+
     def _json_to_bsk_msg(self, json_data, msg_type_name):
-        """Convert JSON dict to BSK message payload."""
+        """Robustly convert JSON dict to BSK message payload."""
         msg_payload_class = self.bsk_msg_types[msg_type_name]
         msg_payload = msg_payload_class()
-        
-        # Use cached mapping if available
+
+        # Generate field mapping once per message type
         if msg_type_name not in self._field_mapping_cache:
             bsk_field_mapping = {}
             for attr_name in dir(msg_payload):
-                if (not attr_name.startswith('_') and 
-                    not callable(getattr(msg_payload, attr_name, None))):
-                    bsk_field_mapping[attr_name.lower()] = attr_name
+                if not attr_name.startswith('_') and not callable(getattr(msg_payload, attr_name, None)):
+                    normalized_name = self.normalize_field_name(attr_name)
+                    bsk_field_mapping[normalized_name] = attr_name
             self._field_mapping_cache[msg_type_name] = bsk_field_mapping
         else:
             bsk_field_mapping = self._field_mapping_cache[msg_type_name]
-        
-        # Set attributes from JSON data
+
         for json_field_name, attr_value in json_data.items():
-            # Skip metadata fields
-            if json_field_name in ['namespace', 'msg_type', 'topic_name', 'time', 'timestamp']:
+            if json_field_name in ['namespace', 'msg_type', 'topic_name', 'time', 'timestamp', 'stamp']:
                 continue
-                
-            # Try to find the BSK field name (either direct match or via lowercase mapping)
-            bsk_field_name = None
-            if hasattr(msg_payload, json_field_name):
-                bsk_field_name = json_field_name
-            elif json_field_name.lower() in bsk_field_mapping:
-                bsk_field_name = bsk_field_mapping[json_field_name.lower()]
-            
+
+            normalized_json_name = self.normalize_field_name(json_field_name)
+            bsk_field_name = bsk_field_mapping.get(normalized_json_name)
+
             if bsk_field_name and hasattr(msg_payload, bsk_field_name):
                 try:
-                    setattr(msg_payload, bsk_field_name, attr_value)
-                except Exception as e:
-                    if hasattr(self, 'bskLogger') and self.bskLogger:
-                        self.bskLogger.bskLog(sysModel.BSK_WARNING, 
-                                             f"Failed to set {bsk_field_name}: {e}")
+                    current_value = getattr(msg_payload, bsk_field_name)
+
+                    if isinstance(current_value, np.ndarray):
+                        attr_array = np.array(attr_value, dtype=current_value.dtype)
+                        attr_array.shape = current_value.shape
+                        setattr(msg_payload, bsk_field_name, attr_array)
                     else:
-                        print(f"WARNING: Failed to set {bsk_field_name}: {e}")
-                    
+                        setattr(msg_payload, bsk_field_name, attr_value)
+
+                except Exception as e:
+                    print(f"WARNING: Failed to set {bsk_field_name}: {e}")
+
         return msg_payload
+
 
     def _setup_zmq_communication(self):
         """Setup all ZMQ sockets and communication channels."""
@@ -434,12 +523,12 @@ class RosBridgeHandler(sysModel.SysModel):
                 else:
                     print(f"WARNING: Reader {reader_name} is not connected.")
         
-        # Initialize output messages to zero state (Basilisk best practice)
+        # Don't initialize output messages to zero - they should receive data from ROS2
+        # Only validate that they exist
         for writer_name, writer_info in self.output_msg_writers.items():
-            msg_type_name = writer_info['msg_type']
-            msg_payload_class = self.bsk_msg_types[msg_type_name]
-            zero_payload = msg_payload_class()
-            writer_info['writer'].write(zero_payload, CurrentSimNanos, self.moduleID)
+            if hasattr(self, 'bskLogger') and self.bskLogger:
+                self.bskLogger.bskLog(sysModel.BSK_DEBUG, 
+                                     f"Output writer {writer_name} ready to receive commands from ROS2")
             
         if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
@@ -465,26 +554,22 @@ class RosBridgeHandler(sysModel.SysModel):
         if not self._check_bridge_health():
             return
 
+        # Check and retry pending subscriptions
+        self._check_pending_subscriptions()
+
         # Publish sim time (special topic, always published)
         self._publish_sim_time(CurrentSimNanos)
 
         # Process all input message readers and publish to ROS2
         for reader_name, reader_info in self.input_msg_readers.items():
-            if reader_info['reader'].isLinked():
+            if reader_info['reader'].isLinked() and reader_info['reader'].isWritten():
                 msg_payload = reader_info['reader']()
                 self._publish_bsk_message(CurrentSimNanos, msg_payload, reader_info['msg_type'])
+                if reader_info['msg_type'] == 'CmdForceBodyMsgPayload':
+                    print(f"[{self.namespace}] <<< Echo reader sees: {msg_payload.forceRequestBody}")
 
         # Receive and process commands from ROS2
         self._receive_and_process_commands(CurrentSimNanos)
-        
-        # Periodic logging (once per second to avoid performance impact)
-        # Following Basilisk pattern for module logging
-        if CurrentSimNanos % int(1e9) == 0:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                     f"RosBridgeHandler [{self.namespace}] Update at {CurrentSimNanos * 1.0E-9:.3f}s")
-            else:
-                print(f"[{self.namespace}] RosBridgeHandler Update at {CurrentSimNanos * 1.0E-9:.3f}s")
 
     def _check_bridge_health(self):
         """Check if bridge heartbeat is healthy."""
@@ -523,14 +608,32 @@ class RosBridgeHandler(sysModel.SysModel):
                 if reader_info['msg_type'] == msg_type_name:
                     topic_name = reader_info['topic_name']
                     break
-            
+
             if topic_name is None:
-                # Fallback to automatic conversion if not found
                 topic_name = self._msg_type_to_topic_name(msg_type_name)
-            
+
             # Convert BSK message to JSON
-            json_data = self._bsk_msg_to_json(msg_payload, msg_type_name)
-            
+            secs = int(CurrentSimNanos // 1_000_000_000)
+            nsecs = int(CurrentSimNanos % 1_000_000_000)
+            if hasattr(msg_payload, "stamp"):
+                try:
+                    # If stamp is a message object with sec/nanosec fields
+                    if hasattr(msg_payload.stamp, "sec") and hasattr(msg_payload.stamp, "nanosec"):
+                        msg_payload.stamp.sec = secs
+                        msg_payload.stamp.nanosec = nsecs
+                    # If stamp is a dict or similar
+                    elif isinstance(msg_payload.stamp, dict):
+                        msg_payload.stamp["sec"] = secs
+                        msg_payload.stamp["nanosec"] = nsecs
+                    # If stamp is None or uninitialized, try to set as dict
+                    elif msg_payload.stamp is None:
+                        msg_payload.stamp = {"sec": secs, "nanosec": nsecs}
+                except Exception:
+                    pass
+
+            # Convert BSK message to JSON (will include the updated stamp)
+            json_data = self._bsk_msg_to_json(msg_payload, msg_type_name, CurrentSimNanos)
+
             # Add metadata for the bridge
             msg = {
                 "namespace": self.namespace,
@@ -539,12 +642,12 @@ class RosBridgeHandler(sysModel.SysModel):
                 "time": float(CurrentSimNanos) * 1e-9,
                 **json_data
             }
-            
+
             self.send_socket.send_string(json.dumps(msg), flags=zmq.NOBLOCK)
-            
+
         except Exception as e:
             if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
+                self.bskLogger.bskLog(sysModel.BSK_ERROR,
                                      f"Error publishing {msg_type_name}: {e}")
             else:
                 print(f"ERROR: Error publishing {msg_type_name}: {e}")
@@ -559,6 +662,18 @@ class RosBridgeHandler(sysModel.SysModel):
                 # Check if this message is for our namespace
                 if command_data.get('namespace') != self.namespace:
                     continue
+                
+                # Handle subscription confirmations
+                if command_data.get('subscription_confirmation', False):
+                    request_id = command_data.get('request_id')
+                    if request_id:
+                        self.confirmed_subscriptions.add(request_id)
+                        if hasattr(self, 'bskLogger') and self.bskLogger:
+                            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
+                                                 f"Received subscription confirmation for {request_id}")
+                        else:
+                            print(f"[{self.namespace}] Received subscription confirmation for {request_id}")
+                    continue
                     
                 msg_type_name = command_data.get('msg_type')
                 if not msg_type_name:
@@ -572,12 +687,22 @@ class RosBridgeHandler(sysModel.SysModel):
                         break
                 
                 if writer_info:
+                    # if msg_type_name == 'CmdForceBodyMsgPayload':
+                    #     command_data['forceRequestBody'] = command_data.get('force_request_body', [0, 0, 0])
                     # Convert JSON to BSK message and write
                     msg_payload = self._json_to_bsk_msg(command_data, msg_type_name)
                     writer_info['writer'].write(msg_payload, CurrentSimNanos, self.moduleID)
                     
                     # Cache the data
                     self.last_msg_data[msg_type_name] = command_data
+                    
+                    # Debug logging for force and torque commands
+                    if msg_type_name == 'CmdForceBodyMsgPayload':
+                        force_data = command_data.get('force_request_body', [0, 0, 0])
+                        print(f"[{self.namespace}] Received force command: [{force_data[0]:.3f}, {force_data[1]:.3f}, {force_data[2]:.3f}] N")
+                    elif msg_type_name == 'CmdTorqueBodyMsgPayload':
+                        torque_data = command_data.get('torque_request_body', [0, 0, 0])
+                        print(f"[{self.namespace}] Received torque command: [{torque_data[0]:.3f}, {torque_data[1]:.3f}, {torque_data[2]:.3f}] Nm")
                     
         except zmq.Again:
             # No more messages available

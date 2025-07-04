@@ -7,30 +7,37 @@ path = os.path.dirname(os.path.abspath(filename))
 # Add the parent directory to the path to access bsk_module
 sys.path.append(os.path.join(path, '..'))
 
-from Basilisk.architecture import messaging, bskLogging
-from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport # general support file with common unit test functions
-from Basilisk.simulation import simSynch
+from Basilisk.architecture import bskLogging
+from Basilisk.utilities import SimulationBaseClass, macros # general support file with common unit test functions
+from Basilisk.simulation import simSynch, spacecraft, extForceTorque
 from bsk_module.ros_bridge_handler import RosBridgeHandler
+from Basilisk.architecture import messaging
+import numpy as np
+from Basilisk.architecture import sysModel
 
+class CmdEchoBuffer(sysModel.SysModel):
+    def __init__(self):
+        super(CmdEchoBuffer, self).__init__()
+        self.cmdForceBodyInMsg = messaging.CmdForceBodyMsgReader()
+        self.cmdForceBodyOutMsg = messaging.CmdForceBodyMsg()
 
-# uncomment this line is this test is to be skipped in the global unit test run, adjust message as needed
-# @pytest.mark.skipif(conditionstring)
-# uncomment this line if this test has an expected failure, adjust message as needed
-# @pytest.mark.xfail() # need to update how the RW states are defined
-# provide a unique test method name, starting with test_
+    def Reset(self, CurrentSimNanos):
+        pass
 
-@pytest.mark.parametrize("function", ["test_RosBridgeHandler"
-                                    #   , "extForceInertialAndTorque"
-                                      ])
+    def UpdateState(self, CurrentSimNanos):
+        if self.cmdForceBodyInMsg.isWritten():
+            input_msg = self.cmdForceBodyInMsg()
+            print(f"[EchoBuffer] <<< Read from rosHandlerModule.cmdForceBodyOutMsg: {input_msg.forceRequestBody}")
+            self.cmdForceBodyOutMsg.write(input_msg, CurrentSimNanos, self.moduleID)
 
 def test_RosBridgeHandlerAllTest(function):
-    """Module Unit Test"""
+    """rosHandlerModule Unit Test"""
     [testResults, testMessage] = eval(function + '()')
     assert testResults < 1, testMessage
     
 def test_RosBridgeHandler(test_rate=0.01, sim_time=300., namespace="test_sat1"):
     """
-    Module Unit Test
+    rosHandlerModule Unit Test
     
     Args:
         test_rate (float): Simulation update rate in seconds
@@ -39,73 +46,86 @@ def test_RosBridgeHandler(test_rate=0.01, sim_time=300., namespace="test_sat1"):
     """
     __tracebackhide__ = True
     
-    unitTaskName = "unitTask"
+    scSimName = "unitTask"
     unitProcessName = "TestProcess"
 
-    # Create a sim module as an empty container
-    unitTestSim = SimulationBaseClass.SimBaseClass()
+    # Create a sim rosHandlerModule as an empty container
+    scSim = SimulationBaseClass.SimBaseClass()
 
     # Create test thread
     testProcessRate = macros.sec2nano(test_rate)
-    testProc = unitTestSim.CreateNewProcess(unitProcessName)
-    testProc.addTask(unitTestSim.CreateNewTask(unitTaskName, testProcessRate))
+    testProc = scSim.CreateNewProcess(unitProcessName)
+    testProc.addTask(scSim.CreateNewTask(scSimName, testProcessRate))
 
     # runRealtime setting
     clockSync = simSynch.ClockSynch()
     clockSync.accelFactor = 1.0
-    unitTestSim.AddModelToTask(unitTaskName, clockSync)
+    scSim.AddModelToTask(scSimName, clockSync)
+
+    # Create spacecraft dynamics (free-flying in space, no gravity)
+    scObject = spacecraft.Spacecraft()
+    scObject.ModelTag = "test_sat1"
+    
+    # Set spacecraft properties
+    scObject.hub.mHub = 17.8  # kg, spacecraft mass
+    scObject.hub.r_BcB_B = [[0.0], [0.0], [0.0]]  # m, center of mass offset
+    scObject.hub.IHubPntBc_B = [[0.314, 0.0, 0.0],
+                                [0.0, 0.314, 0.0],
+                                [0.0, 0.0, 0.314]]  # kg*m^2, spacecraft inertia
+    
+    # Set initial spacecraft states - start at origin for simplicity
+    scObject.hub.r_CN_NInit = [0.0, 0.0, 0.0]  # m, initial position at origin
+    scObject.hub.v_CN_NInit = [0.0, 0.0, 0.0]  # m/s, initial velocity at rest
+    scObject.hub.sigma_BNInit = [[0.0], [0.0], [0.0]]  # MRP initial attitude (identity)
+    scObject.hub.omega_BN_BInit = [[0.0], [0.0], [0.0]]  # rad/s, initial angular velocity at rest
 
     # Create ROS bridge handler - it will automatically discover BSK message types
-    module = RosBridgeHandler(namespace=namespace)
-    module.ModelTag = "ros_bridge_handler"
-    module.bskLogger = bskLogging.BSKLogger(bskLogging.BSK_DEBUG)
+    rosHandlerModule = RosBridgeHandler(namespace=namespace)
+    rosHandlerModule.ModelTag = "ros_bridge_handler"
+    rosHandlerModule.bskLogger = bskLogging.BSKLogger(bskLogging.BSK_DEBUG)
 
     # Add message readers/writers only if the types were discovered
-    if 'SCStatesMsgPayload' in module.bsk_msg_types:
-        scstate_reader = module.add_bsk_msg_reader('SCStatesMsgPayload', 'scStateInMsg', 'sc_states')
-    else:
-        print("ERROR: SCStatesMsgPayload not discovered")
-        return [1, "SCStatesMsgPayload not found"]
+    scstate_reader = rosHandlerModule.add_bsk_msg_reader('SCStatesMsgPayload', 'scStateInMsg', 'sc_states')
+    # force_reader = rosHandlerModule.add_bsk_msg_reader('CmdForceBodyMsgPayload', 'cmdForceBodyInMsg', 'cmd_force_body')
     
-    if 'CmdForceBodyMsgPayload' in module.bsk_msg_types:
-        force_writer = module.add_bsk_msg_writer('CmdForceBodyMsgPayload', 'cmdForceOutMsg', 'cmd_force')
-        
-    if 'CmdTorqueBodyMsgPayload' in module.bsk_msg_types:
-        torque_writer = module.add_bsk_msg_writer('CmdTorqueBodyMsgPayload', 'cmdTorqueOutMsg', 'cmd_torque')
+    # Add writers for command topics (receiving commands from ROS2)
+    force_writer = rosHandlerModule.add_bsk_msg_writer('CmdForceBodyMsgPayload', 'cmdForceBodyOutMsg', 'cmd_force_body')
+    torque_writer = rosHandlerModule.add_bsk_msg_writer('CmdTorqueBodyMsgPayload', 'cmdTorqueBodyOutMsg', 'cmd_torque_body')
 
-    # Add test module to runtime call list
-    unitTestSim.AddModelToTask(unitTaskName, module)
+    # Echo Buffer Module
+    echoBufferModule = CmdEchoBuffer()
+    echoBufferModule.ModelTag = "echoBuffer"
+    echoBufferModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
+
+    force_echo_reader = rosHandlerModule.add_bsk_msg_reader('CmdForceBodyMsgPayload', 'cmdForceBodyEchoInMsg', 'cmd_force_body')
+    force_echo_reader.subscribeTo(echoBufferModule.cmdForceBodyOutMsg)
+
+    # Create external force and torque rosHandlerModule to apply ROS commands
+    extForceTorqueModule = extForceTorque.ExtForceTorque()
+    extForceTorqueModule.ModelTag = "externalDisturbance"
+    extForceTorqueModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
+    scObject.addDynamicEffector(extForceTorqueModule)
+
+    # Add spacecraft and rosHandlerModule to the simulation task
+    scSim.AddModelToTask(scSimName, rosHandlerModule, 10)
+    scSim.AddModelToTask(scSimName, echoBufferModule, 5)
+    scSim.AddModelToTask(scSimName, extForceTorqueModule, 1)
+    scSim.AddModelToTask(scSimName, scObject, 0)
     
-    # Create test spacecraft state data using the discovered types
-    scStateInData = messaging.SCStatesMsgPayload()
-    scStateInData.r_BN_N = [1000., 100000., -10000.]
-    scStateInData.v_BN_N = [200., 300., -400.]
-    scStateInData.sigma_BN = [0.1, -0.2, 0.3]
-    scStateInData.omega_BN_B = [0.01, -0.02, 0.03]
-    scStateInData.r_CN_N = [1000., 100000., -10000.]
-    scStateInData.v_CN_N = [200., 300., -400.]
-    scStateInData.omegaDot_BN_B = [0.001, -0.002, 0.003]
-    scStateInData.TotalAccumDVBdy = [0.0, 0.0, 0.0]
-    scStateInData.TotalAccumDV_BN_B = [0.0, 0.0, 0.0]
-    scStateInData.TotalAccumDV_CN_N = [0.0, 0.0, 0.0]
-    scStateInData.nonConservativeAccelpntB_B = [0.0, 0.0, 0.0]
-    scStateInData.MRPSwitchCount = 0
-    
-    scStateInMsg = messaging.SCStatesMsg().write(scStateInData)
-    
-    # Connect the state message to the bridge handler
-    module.scStateInMsg.subscribeTo(scStateInMsg)
-    
+    # Connect spacecraft state output to bridge handler input
+    rosHandlerModule.scStateInMsg.subscribeTo(scObject.scStateOutMsg)
+    # rosHandlerModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
+
     # Start simulation
     print(f"Initializing Basilisk simulation for namespace '{namespace}'...")
-    unitTestSim.InitializeSimulation()
+    scSim.InitializeSimulation()
 
     print(f"Running simulation for {sim_time}s at {1/test_rate:.1f} Hz...")
-    unitTestSim.ConfigureStopTime(macros.sec2nano(sim_time))
-    unitTestSim.ExecuteSimulation()
+    scSim.ConfigureStopTime(macros.sec2nano(sim_time))
+    scSim.ExecuteSimulation()
     
     print(f"Simulation complete. Sending kill signal to bridge...")
-    module.send_kill_signal()
+    rosHandlerModule.send_kill_signal()
     
     print(f"DONE: Simulation finished for spacecraft '{namespace}'")
     
