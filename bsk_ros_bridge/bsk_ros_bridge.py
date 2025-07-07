@@ -1,71 +1,109 @@
+"""
+BSK-ROS2 Bridge: Bidirectional communication bridge between Basilisk and ROS2.
+
+This bridge enables real-time data exchange between the Basilisk astrodynamics 
+simulator and ROS2 ecosystem via ZeroMQ messaging with JSON serialization.
+"""
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64
 import zmq
 import threading
-import orjson
+import orjson  # Faster JSON processing than standard json
 import inspect
 import re
 
-# Constants
-DEFAULT_SUB_PORT = 5550              # ZMQ port for receiving data from Basilisk
-DEFAULT_PUB_PORT = 5551              # ZMQ port for sending data to Basilisk
-DEFAULT_HEARTBEAT_PORT = 5552        # ZMQ port for heartbeat/keep-alive messages
-HEARTBEAT_INTERVAL_SEC = 0.1         # Heartbeat ping interval (100ms)
+# =============================================================================
+# COMMUNICATION CONFIGURATION
+# =============================================================================
+DEFAULT_SUB_PORT = 5550              # Receive telemetry from Basilisk
+DEFAULT_PUB_PORT = 5551              # Send commands to Basilisk  
+DEFAULT_HEARTBEAT_PORT = 5552        # Connection health monitoring
+HEARTBEAT_INTERVAL_SEC = 0.1         # Keep-alive frequency
 
-# Pre-compiled regex for camelCase conversion
+# =============================================================================
+# PERFORMANCE OPTIMIZATIONS
+# =============================================================================
+# Pre-compiled regex for efficient camelCase to snake_case conversion
 CAMEL_TO_SNAKE_RE = re.compile(r'(?<!^)(?=[A-Z])')
 
-# Using orjson for fast JSON processing
 def json_loads(data): 
+    """Fast JSON deserialization using orjson."""
     return orjson.loads(data)
 
 def json_dumps(data): 
-    return orjson.dumps(data)  # Return bytes directly
+    """Fast JSON serialization using orjson - returns bytes directly."""
+    return orjson.dumps(data)
+
 
 class BskRosBridge(Node):
     """
-    ROS2 node bridging Basilisk (via ZMQ) and ROS2 topics.
-    Automatically handles BSK message types and creates topics dynamically.
+    Bidirectional bridge between Basilisk simulator and ROS2.
+    
+    Architecture:
+    - ZMQ SUB socket: Receives telemetry data from BSK
+    - ZMQ PUB socket: Sends commands/data to BSK  
+    - Dynamic topic creation: Auto-discovers BSK message types
+    - Namespace support: Multiple spacecraft/simulation instances
     """
-    _field_mapping_cache = {}  # Cache for lowercase field name mapping per message type
-    _topic_name_cache = {}     # Cache for topic name conversions
+    
+    # Class-level caches for performance optimization
+    _field_mapping_cache = {}  # Message field name mappings (lowercase lookup)
+    _topic_name_cache = {}     # Topic name conversions (camelCase -> snake_case)
 
     def __init__(self, sub_port=DEFAULT_SUB_PORT, pub_port=DEFAULT_PUB_PORT, heartbeat_port=DEFAULT_HEARTBEAT_PORT):
         super().__init__('bsk_ros_bridge')
+        
+        # Threading control
         self.stop_event = threading.Event()
+        
+        # Port configuration - allows runtime override via ROS parameters
+        self._setup_parameters(sub_port, pub_port, heartbeat_port)
+        
+        # Communication infrastructure
+        self.bridge_publishers = {}   # namespace -> {topic_name -> {publisher, type}}
+        self.bridge_subscribers = {}  # namespace -> {topic_name -> subscriber}
+        self.zmq_context = zmq.Context()
+        
+        # Message type discovery and caching
+        self._bsk_msg_types = {}      # BSK message type registry
+        self._sim_time_msg = Float64()  # Pre-allocated for performance
+        
+        # Initialize bridge components
+        self._discover_bsk_message_types()
+        self._setup_zmq_communication()
+        self._start_background_threads()
+        
+        # Special topic for simulation time synchronization
+        self.sim_time_pub = self.create_publisher(Float64, '/bsk_sim_time', 10)
+        
+        self.get_logger().info(
+            f"BSK-ROS2 Bridge ready on ports {self.sub_port}/{self.pub_port}/{self.heartbeat_port}"
+        )
 
-        # Declare parameters for port configuration
+    # =========================================================================
+    # INITIALIZATION METHODS
+    # =========================================================================
+    
+    def _setup_parameters(self, sub_port, pub_port, heartbeat_port):
+        """Configure ROS parameters for port settings."""
         self.declare_parameter('sub_port', sub_port)
         self.declare_parameter('pub_port', pub_port)
         self.declare_parameter('heartbeat_port', heartbeat_port)
 
-        # Get port values from parameters (allows launch-time configuration)
         self.sub_port = self.get_parameter('sub_port').get_parameter_value().integer_value
         self.pub_port = self.get_parameter('pub_port').get_parameter_value().integer_value
         self.heartbeat_port = self.get_parameter('heartbeat_port').get_parameter_value().integer_value
 
-        self.bridge_publishers = {}
-        self.bridge_subscribers = {}
-        self.zmq_context = zmq.Context()
-        self._bsk_msg_types = {}   # Cache for BSK message types by name
-        self._sim_time_msg = Float64()
-        
-        # Discover all BSK message types
-        self._discover_bsk_message_types()
-
-        # Set up ZMQ
-        self.setup_zmq()
-        self.listener_thread = threading.Thread(target=self.zmq_listener, daemon=True)
-        self.listener_thread.start()
-        self.get_logger().info(f"Bridge initialised successfully on ports {self.sub_port}/{self.pub_port}/{self.heartbeat_port}.")
-        self.sim_time_pub = self.create_publisher(Float64, '/bsk_sim_time', 10)
-
     def _discover_bsk_message_types(self):
-        """Discover all BSK message types from bsk_msgs.msg module."""
+        """
+        Auto-discover all BSK message types for dynamic topic creation.
+        This enables the bridge to handle any BSK message without manual registration.
+        """
         try:
             import bsk_msgs.msg as bsk_msgs
-            # Use list comprehension for better performance
+            
+            # Find all classes ending with 'MsgPayload' (BSK convention)
             msg_classes = [
                 (name, getattr(bsk_msgs, name)) 
                 for name in dir(bsk_msgs) 
@@ -76,54 +114,105 @@ class BskRosBridge(Node):
             
             self._bsk_msg_types = dict(msg_classes)
             self.get_logger().info(f"Discovered {len(self._bsk_msg_types)} BSK message types")
+            
         except ImportError as e:
             self.get_logger().error(f"Failed to import bsk_msgs: {e}")
             raise
 
+    def _setup_zmq_communication(self):
+        """
+        Initialize ZMQ sockets with performance optimizations.
+        
+        Socket configuration rationale:
+        - CONFLATE: Only keep latest message (real-time data)
+        - Low HWM: Prevent memory buildup under high load
+        - NOBLOCK: Non-blocking operations for responsive bridge
+        """
+        # Subscriber: Receive telemetry from BSK
+        self.sub_socket = self.zmq_context.socket(zmq.SUB)
+        self.sub_socket.connect(f"tcp://localhost:{self.sub_port}")
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")  # Subscribe to all messages
+        self.sub_socket.setsockopt(zmq.CONFLATE, 1)           # Keep only latest message
+        self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)         # 100ms receive timeout
+        self.sub_socket.setsockopt(zmq.RCVHWM, 10)            # Low receive buffer
+
+        # Publisher: Send commands to BSK
+        self.pub_socket = self.zmq_context.socket(zmq.PUB)
+        self.pub_socket.bind(f"tcp://*:{self.pub_port}")
+        self.pub_socket.setsockopt(zmq.LINGER, 0)             # No blocking on close
+        self.pub_socket.setsockopt(zmq.SNDHWM, 50)            # Send buffer limit
+        self.pub_socket.setsockopt(zmq.IMMEDIATE, 1)          # Immediate delivery
+
+        # Heartbeat: Connection monitoring
+        self.heartbeat_pub = self.zmq_context.socket(zmq.PUB)
+        self.heartbeat_pub.bind(f"tcp://*:{self.heartbeat_port}")
+        self.heartbeat_pub.setsockopt(zmq.LINGER, 0)
+        self.heartbeat_pub.setsockopt(zmq.SNDHWM, 1)          # Only latest heartbeat
+
+        # Pre-serialize heartbeat message for efficiency
+        self.heartbeat_msg = json_dumps({"msg": "ping"})
+        
+        self.get_logger().info("ZMQ communication sockets initialized")
+
+    def _start_background_threads(self):
+        """Start daemon threads for ZMQ message handling and heartbeat."""
+        # Message listener thread
+        self.listener_thread = threading.Thread(target=self._zmq_listener, daemon=True)
+        self.listener_thread.start()
+        
+        # Heartbeat thread for connection monitoring
+        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self.heartbeat_thread.start()
+
+    # =========================================================================
+    # MESSAGE CONVERSION UTILITIES
+    # =========================================================================
+    
     def _bsk_type_to_topic_name(self, bsk_type_name):
-        """Convert BSK message type to snake_case topic name with caching."""
+        """
+        Convert BSK message type to ROS topic name with caching.
+        """
         if bsk_type_name in self._topic_name_cache:
             return self._topic_name_cache[bsk_type_name]
             
-        # Remove 'MsgPayload' suffix if present
+        # Remove BSK suffix and convert to snake_case
         name = bsk_type_name[:-10] if bsk_type_name.endswith('MsgPayload') else bsk_type_name
-        
-        # Use regex for more efficient camelCase to snake_case conversion
         topic_name = CAMEL_TO_SNAKE_RE.sub('_', name).lower()
         
         self._topic_name_cache[bsk_type_name] = topic_name
         return topic_name
 
     def _json_to_bsk_msg(self, json_data, msg_type):
-        """Convert JSON data to BSK message instance using cached reflection."""
+        """
+        Convert JSON data to BSK message using cached field mappings.
+        Handles case-insensitive field matching and special timestamp conversion.
+        """
         msg = msg_type()
         msg_type_name = msg_type.__name__
 
-        # Use cached field mapping
+        # Use cached field mapping for performance
         if msg_type_name not in self._field_mapping_cache:
-            # Pre-compute field mapping once per message type
             field_types = msg.get_fields_and_field_types()
             bsk_field_mapping = {name.lower(): name for name in field_types}
             self._field_mapping_cache[msg_type_name] = (bsk_field_mapping, field_types)
         
         bsk_field_mapping, field_types = self._field_mapping_cache[msg_type_name]
 
-        # Set fields from JSON data
+        # Map JSON fields to ROS message fields
         for json_field_name, field_value in json_data.items():
-            # Special handling for timestamp
+            # Handle ROS timestamp format conversion
             if json_field_name == "stamp" and hasattr(msg, "stamp") and isinstance(field_value, dict):
                 msg.stamp.sec = int(field_value.get("sec", 0))
                 msg.stamp.nanosec = int(field_value.get("nanosec", 0))
                 continue
                 
-            # Find ROS2 field name
-            if json_field_name in field_types:
-                ros_field_name = json_field_name
-            else:
-                ros_field_name = bsk_field_mapping.get(json_field_name.lower())
+            # Find corresponding ROS field (case-insensitive)
+            ros_field_name = (json_field_name if json_field_name in field_types 
+                            else bsk_field_mapping.get(json_field_name.lower()))
             
             if ros_field_name:
                 attr_spec = field_types[ros_field_name]
+                # Handle array fields
                 if attr_spec.startswith('float64[') and isinstance(field_value, list):
                     setattr(msg, ros_field_name, [float(x) for x in field_value])
                 else:
@@ -131,14 +220,13 @@ class BskRosBridge(Node):
         return msg
 
     def _bsk_msg_to_json(self, msg):
-        """Convert BSK message to JSON dict using cached field access."""
+        """Convert BSK message to JSON dict with efficient field iteration."""
         json_data = {}
         
-        # Get field types once and iterate
         for field_name in msg.get_fields_and_field_types():
             field_value = getattr(msg, field_name)
             
-            # Handle special types efficiently
+            # Handle special ROS types
             if hasattr(field_value, 'sec') and hasattr(field_value, 'nanosec'):
                 json_data[field_name] = {'sec': int(field_value.sec), 'nanosec': int(field_value.nanosec)}
             elif hasattr(field_value, 'tolist'):
@@ -148,45 +236,27 @@ class BskRosBridge(Node):
         
         return json_data
 
-    def setup_zmq(self):
-        """Initialize ZMQ sockets for Basilisk <-> ROS2 communication and heartbeat."""
-        self.sub_socket = self.zmq_context.socket(zmq.SUB)
-        self.sub_socket.connect(f"tcp://localhost:{self.sub_port}")
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        self.sub_socket.setsockopt(zmq.CONFLATE, 1)
-        self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)
-        self.sub_socket.setsockopt(zmq.RCVHWM, 10)
+    # =========================================================================
+    # BACKGROUND THREAD METHODS
+    # =========================================================================
+    
+    def _heartbeat_loop(self):
+        """Background thread: Send periodic heartbeat to monitor connection health."""
+        while not self.stop_event.wait(HEARTBEAT_INTERVAL_SEC):
+            try:
+                self.heartbeat_pub.send(self.heartbeat_msg, flags=zmq.NOBLOCK)
+            except zmq.error.Again:
+                pass  # Socket block, continue
+            except Exception:
+                break  # Socket error, exit thread
 
-        self.pub_socket = self.zmq_context.socket(zmq.PUB)
-        self.pub_socket.bind(f"tcp://*:{self.pub_port}")
-        self.pub_socket.setsockopt(zmq.LINGER, 0)
-        self.pub_socket.setsockopt(zmq.SNDHWM, 50)
-        self.pub_socket.setsockopt(zmq.IMMEDIATE, 1)
-
-        self.heartbeat_pub = self.zmq_context.socket(zmq.PUB)
-        self.heartbeat_pub.bind(f"tcp://*:{self.heartbeat_port}")
-        self.heartbeat_pub.setsockopt(zmq.LINGER, 0)
-        self.heartbeat_pub.setsockopt(zmq.SNDHWM, 1)
-
-        # Pre-serialize heartbeat message as bytes
-        self.heartbeat_msg = json_dumps({"msg": "ping"})
-
-        def heartbeat_thread():
-            while not self.stop_event.wait(HEARTBEAT_INTERVAL_SEC):
-                try:
-                    self.heartbeat_pub.send(self.heartbeat_msg, flags=zmq.NOBLOCK)
-                except zmq.error.Again:
-                    pass
-                except Exception:
-                    break
-                    
-        self.heartbeat_thread = threading.Thread(target=heartbeat_thread, daemon=True)
-        self.heartbeat_thread.start()
-        self.get_logger().info("Bridge ZMQ sockets ready.")
-
-    def zmq_listener(self):
-        """Thread: Listen for ZMQ messages and publish to ROS topics."""
+    def _zmq_listener(self):
+        """
+        Background thread: Process incoming ZMQ messages from BSK.
+        Handles subscription requests, telemetry data, and simulation time updates.
+        """
         self.get_logger().debug("ZMQ listener thread started")
+        
         while not self.stop_event.is_set() and rclpy.ok():
             try:
                 msg_bytes = self.sub_socket.recv(flags=zmq.NOBLOCK)  # Receive as bytes
@@ -200,29 +270,36 @@ class BskRosBridge(Node):
                 if data.get('subscription_request', False):
                     self._handle_subscription_request(data)
                 elif 'sim_time' in data:
-                    sim_time = data['sim_time']
-                    if sim_time is not None:
-                        # Reuse pre-allocated message
-                        self._sim_time_msg.data = float(sim_time)
-                        self.sim_time_pub.publish(self._sim_time_msg)
+                    self._handle_sim_time_update(data)
                 else:
-                    # Handle BSK messages
-                    msg_type_name = data.get('msg_type')
-                    if msg_type_name and msg_type_name in self._bsk_msg_types:
-                        namespace = data.get('namespace', 'default')
-                        self._handle_bsk_message(data, namespace, msg_type_name)
+                    self._handle_telemetry_message(data)
                     
             except zmq.error.Again:
                 continue  # No message available, continue loop
             except orjson.JSONDecodeError:
-                self.get_logger().debug("Invalid JSON received")
+                self.get_logger().debug("Invalid JSON received from BSK")
             except Exception as e:
                 self.get_logger().error(f"Error in ZMQ listener: {e}")
                 break
+                
         self.get_logger().debug("ZMQ listener thread exiting")
 
+    # =========================================================================
+    # MESSAGE HANDLING METHODS
+    # =========================================================================
+    
+    def _handle_sim_time_update(self, data):
+        """Handle simulation time synchronization from BSK."""
+        sim_time = data['sim_time']
+        if sim_time is not None:
+            self._sim_time_msg.data = float(sim_time)
+            self.sim_time_pub.publish(self._sim_time_msg)
+
     def _handle_subscription_request(self, data):
-        """Handle subscription request from BSK and create ROS2 subscriber."""
+        """
+        Handle dynamic subscription requests from BSK.
+        Creates ROS subscribers for topics that BSK wants to receive data from.
+        """
         try:
             namespace = data.get('namespace', 'default')
             msg_type_name = data.get('msg_type')
@@ -230,27 +307,27 @@ class BskRosBridge(Node):
             request_id = data.get('request_id')
             
             if not all([namespace, msg_type_name, topic_name]):
-                self.get_logger().warn("Incomplete subscription request data")
+                self.get_logger().warn("Incomplete subscription request from BSK")
                 return
             
-            # Construct full topic name for subscription (BSK input topics)
+            # Create namespaced topic (BSK input channel)
             full_topic_name = f"/{namespace}/bsk/in/{topic_name}"
             
-            # Initialize namespace dict if needed
+            # Initialize namespace tracking
             if namespace not in self.bridge_subscribers:
                 self.bridge_subscribers[namespace] = {}
             
             success = False
             
-            # Only create subscriber if it doesn't exist
+            # Create subscriber if it doesn't exist
             if topic_name not in self.bridge_subscribers[namespace]:
                 if msg_type_name in self._bsk_msg_types:
                     msg_type = self._bsk_msg_types[msg_type_name]
                     
-                    # Create callback that captures the message type name and namespace
+                    # Create callback with captured context
                     def create_callback(msg_type_name, namespace):
                         def callback(msg):
-                            self.ros_to_basilisk_callback(msg, namespace, msg_type_name)
+                            self._ros_to_basilisk_callback(msg, namespace, msg_type_name)
                         return callback
                     
                     try:
@@ -262,67 +339,45 @@ class BskRosBridge(Node):
                         )
                         
                         self.bridge_subscribers[namespace][topic_name] = subscriber
-                        self.get_logger().info(f"Created subscriber for {full_topic_name} ({msg_type_name}) on request from BSK")
+                        self.get_logger().info(f"Created BSK input: {full_topic_name} ({msg_type_name})")
                         success = True
                         
                     except Exception as e:
                         self.get_logger().error(f"Could not create subscriber for {full_topic_name}: {e}")
                 else:
-                    self.get_logger().warn(f"Unknown BSK message type in subscription request: {msg_type_name}")
+                    self.get_logger().warn(f"Unknown BSK message type: {msg_type_name}")
             else:
-                self.get_logger().debug(f"Subscriber for {full_topic_name} already exists")
-                success = True  # Already exists, so consider it successful
-            
-            # Send confirmation back to BSK if request_id provided
-            if request_id and success:
-                confirmation = {
-                    "subscription_confirmation": True,
-                    "namespace": namespace,
-                    "msg_type": msg_type_name,
-                    "topic_name": topic_name,
-                    "request_id": request_id,
-                    "success": True
-                }
-                
-                try:
-                    self.pub_socket.send(json_dumps(confirmation), flags=zmq.NOBLOCK)
-                    self.get_logger().debug(f"Sent subscription confirmation for {request_id}")
-                except Exception as e:
-                    self.get_logger().error(f"Failed to send subscription confirmation: {e}")
+                success = True  # Already exists
+
+            # Send confirmation back to BSK
+            self._send_subscription_confirmation(request_id, namespace, msg_type_name, topic_name, success)
                 
         except Exception as e:
             self.get_logger().error(f"Error handling subscription request: {e}")
 
-    def _handle_bsk_message(self, data, namespace, msg_type_name):
-        """Handle incoming BSK message and publish to appropriate ROS topic."""
+    def _handle_telemetry_message(self, data):
+        """
+        Handle incoming telemetry data from BSK.
+        Creates publishers dynamically and forwards data to ROS topics.
+        """
         try:
-            # Validate input data first
-            if not isinstance(data, dict):
-                self.get_logger().warn(f"Invalid data type for BSK message: {type(data)}")
+            msg_type_name = data.get('msg_type')
+            if not msg_type_name or msg_type_name not in self._bsk_msg_types:
                 return
                 
-            if not msg_type_name:
-                self.get_logger().warn("Missing msg_type_name in BSK message")
-                return
-                
-            if msg_type_name not in self._bsk_msg_types:
-                self.get_logger().warn(f"Unknown BSK message type: {msg_type_name}")
-                return
-
-            # Use topic name from message if provided, otherwise convert from message type
-            topic_name = data.get('topic_name')
-            if topic_name is None:
-                topic_name = self._bsk_type_to_topic_name(msg_type_name)
+            namespace = data.get('namespace', 'default')
             
+            # Use explicit topic name or derive from message type
+            topic_name = data.get('topic_name', self._bsk_type_to_topic_name(msg_type_name))
             full_topic_name = f"/{namespace}/bsk/out/{topic_name}"
             
-            # Create publisher if not exists
+            # Initialize namespace tracking
             if namespace not in self.bridge_publishers:
                 self.bridge_publishers[namespace] = {}
-                # Initialize subscribers dict for this namespace
                 if namespace not in self.bridge_subscribers:
                     self.bridge_subscribers[namespace] = {}
             
+            # Create publisher on first message
             if topic_name not in self.bridge_publishers[namespace]:
                 msg_type = self._bsk_msg_types[msg_type_name]
                 publisher = self.create_publisher(msg_type, full_topic_name, 10)
@@ -332,22 +387,42 @@ class BskRosBridge(Node):
                 }
                 self.get_logger().info(f"Created publisher for {full_topic_name} ({msg_type_name})")
             
-            # Convert JSON to BSK message and publish
+            # Convert and publish message
             pub_info = self.bridge_publishers[namespace][topic_name]
-            
             bsk_msg = self._json_to_bsk_msg(data, pub_info['type'])
             pub_info['publisher'].publish(bsk_msg)
             
         except Exception:
-            pass
+            pass  # Silent failure to avoid log spam on bad messages
 
-    def ros_to_basilisk_callback(self, msg, namespace, msg_type_name):
-        """Handle ROS messages and send them to Basilisk via ZMQ"""
-        try:
-            # Convert BSK message to JSON
-            json_data = self._bsk_msg_to_json(msg)
+    def _send_subscription_confirmation(self, request_id, namespace, msg_type_name, topic_name, success):
+        """Send subscription confirmation back to BSK."""
+        if not request_id or not success:
+            return
             
-            # Add metadata
+        confirmation = {
+            "subscription_confirmation": True,
+            "namespace": namespace,
+            "msg_type": msg_type_name,
+            "topic_name": topic_name,
+            "request_id": request_id,
+            "success": True
+        }
+        
+        try:
+            self.pub_socket.send(json_dumps(confirmation), flags=zmq.NOBLOCK)
+            self.get_logger().debug(f"Sent subscription confirmation for {request_id}")
+        except Exception as e:
+            self.get_logger().error(f"Failed to send subscription confirmation: {e}")
+
+    def _ros_to_basilisk_callback(self, msg, namespace, msg_type_name):
+        """
+        Forward ROS messages to BSK via ZMQ.
+        Called when ROS publishes to topics that BSK is subscribed to.
+        """
+        try:
+            # Convert to JSON with metadata
+            json_data = self._bsk_msg_to_json(msg)
             data = {
                 'namespace': namespace,
                 'msg_type': msg_type_name,
@@ -355,47 +430,51 @@ class BskRosBridge(Node):
                 **json_data
             }
             
-            json_bytes = json_dumps(data)  # Returns bytes directly
+            # Send to BSK
+            json_bytes = json_dumps(data)
             self.pub_socket.send(json_bytes, flags=zmq.NOBLOCK)
             self.get_logger().debug(f"Sent to Basilisk: {msg_type_name} for {namespace}")
             
         except zmq.error.Again:
-            self.get_logger().debug("ZMQ send would block, message dropped")
+            self.get_logger().debug("ZMQ send buffer full, message dropped")
         except Exception as e:
-            self.get_logger().error(f"Error in ROS to Basilisk callback: {e}")
+            self.get_logger().error(f"Error in ROS->BSK callback: {e}")
 
+    # =========================================================================
+    # LIFECYCLE MANAGEMENT
+    # =========================================================================
+    
     def shutdown(self):
-        """Cleanly shutdown bridge, sockets, and node."""
-        self.get_logger().info("Shutting down bridge...")
+        """Clean shutdown of bridge components."""
+        self.get_logger().info("Shutting down BSK-ROS2 Bridge...")
         self.stop_event.set()
         
+        # Close ZMQ sockets
         try:
             for socket in [self.sub_socket, self.pub_socket, self.heartbeat_pub]:
                 socket.setsockopt(zmq.LINGER, 0)
                 socket.close()
             self.zmq_context.term()
-        except Exception as e:
-            self.get_logger().error(f"Error closing ZMQ: {e}")
+        except Exception:
+            pass
         
-        # Wait for threads with shorter timeout
+        # Wait for background threads
         for thread in [self.listener_thread, self.heartbeat_thread]:
             if thread.is_alive():
                 thread.join(timeout=1.0)
         
         super().destroy_node()
-        self.get_logger().info("Bridge shutdown complete")
 
     def __enter__(self):
-        """Context manager entry."""
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit with cleanup."""
         self.shutdown()
         return False
 
+
 def main(args=None):
-    """Main entry point"""
+    """Main entry point for BSK-ROS2 Bridge."""
     rclpy.init(args=args)
     
     try:

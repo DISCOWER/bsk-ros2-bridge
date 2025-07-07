@@ -1,20 +1,27 @@
+# =============================================================================
+# BASILISK-ROS2 BRIDGE HANDLER
+# =============================================================================
+# Core Basilisk imports
 from Basilisk.architecture import sysModel, messaging
 import Basilisk.architecture.messaging as messaging_pkg
+
+# Communication and data processing
 import zmq
 import threading
 import time
-import orjson
-import inspect
-import importlib
-import pkgutil
+import orjson  # Faster JSON processing than standard json
 import numpy as np
 import re
 
-# Global variables should be avoided, but keeping for compatibility
-global delay_count
-delay_count = 0
+# Module discovery
+import inspect
+import importlib
+import pkgutil
 
-# Shared ZMQ context and sockets for multi-spacecraft scenarios
+# =============================================================================
+# GLOBAL STATE AND OPTIMIZATIONS
+# =============================================================================
+# Shared ZMQ resources for multi-spacecraft scenarios - avoids port conflicts
 _shared_context = None
 _shared_sockets = {}
 
@@ -22,44 +29,47 @@ _shared_sockets = {}
 CAMEL_TO_SNAKE_RE = re.compile(r'(?<!^)(?=[A-Z])')
 NORMALIZE_FIELD_RE = re.compile(r'_')
 
-# Optimized JSON functions using orjson
+# =============================================================================
+# JSON UTILITIES - Using orjson for performance
+# =============================================================================
 def json_loads(data):
+    """Fast JSON deserialization using orjson."""
     return orjson.loads(data)
 
 def json_dumps(data):
-    return orjson.dumps(data)  # Return bytes directly for ZMQ
+    """Fast JSON serialization using orjson - returns bytes directly."""
+    return orjson.dumps(data)
 
-# See https://hanspeterschaub.info/basilisk/Learn/makingModules/pyModules.html for Python Module creation original example.
+
 class RosBridgeHandler(sysModel.SysModel):
     """
-    Basilisk-ROS2 Bridge Handler Module
+    Basilisk-ROS2 Bridge Handler - Enables bidirectional communication between
+    Basilisk spacecraft simulation and ROS2 ecosystem via ZMQ.
     
-    This class bridges Basilisk spacecraft simulation with ROS2 by handling:
-    - ZMQ communication between Basilisk and ROS2 bridge
+    Key Features:
     - Automatic BSK message type discovery and conversion
-    - Publishing any BSK message payload to ROS2 topics
-    - Receiving any BSK message payload from ROS2 topics
-    - Health monitoring via heartbeat mechanism
-    - Graceful shutdown and resource cleanup
+    - Dynamic topic creation based on message types
+    - Multi-spacecraft namespace support
+    - Robust connection monitoring with heartbeat
+    - Performance optimized with caching and pre-compilation
     
-    Inherits from SysModel and implements the required methods:
-    - Reset(): Initialize persistent data to ready state
-    - UpdateState(): Cyclical worker method called at specified rate
-    
-    Usage:
-        bridge = RosBridgeHandler(namespace="spacecraft1")
-        bridge.scStateInMsg.subscribeTo(scStateMsg)
-        # Add to simulation task...
+    Architecture:
+    - Inherits from SysModel (Basilisk module pattern)
+    - Uses ZMQ for low-latency communication with bridge
+    - JSON serialization for cross-language compatibility
+    - Background threads for heartbeat monitoring
     """
-    _field_mapping_cache = {}  # Cache for lowercase field name mapping per message type
-    _topic_name_cache = {}     # Cache for topic name conversions
-    _bsk_attrs_cache = {}      # Cache for BSK message attributes
+    
+    # Performance caches - shared across instances
+    _field_mapping_cache = {}
+    _topic_name_cache = {}
+    _bsk_attrs_cache = {}
 
     def __init__(self, namespace="spacecraft1", send_port=5550, receive_port=5551, 
                  heartbeat_port=5552, timeout=15):
         """
-        Initialize the ROS Bridge Handler.
-        
+        Initialize ROS Bridge Handler.
+
         Args:
             namespace (str): Spacecraft namespace for topic routing
             send_port (int): ZMQ port for sending data to bridge (BSK -> ROS2)
@@ -67,28 +77,27 @@ class RosBridgeHandler(sysModel.SysModel):
             heartbeat_port (int): ZMQ port for heartbeat monitoring
             timeout (int): Timeout in seconds for various operations
         """
-        # Call parent constructor first - this is critical for Basilisk modules
         super(RosBridgeHandler, self).__init__()
 
-        # Configuration parameters
+        # Configuration
         self.namespace = namespace
         self.timeout = timeout
         self.send_port = send_port
         self.receive_port = receive_port
         self.heartbeat_port = heartbeat_port
         
-        # Dynamic message handling
-        self.input_msg_readers = {}    # BSK message readers for inputs
-        self.output_msg_writers = {}   # BSK message writers for outputs
-        self.last_msg_data = {}        # Cache for last received message data
+        # Dynamic message management
+        self.input_msg_readers = {}    # BSK -> ROS2 publishers
+        self.output_msg_writers = {}   # ROS2 -> BSK subscribers
+        self.last_msg_data = {}        # Cache for debugging/monitoring
         
-        # Subscription handshaking
-        self.pending_subscriptions = {}  # Track pending subscription requests
-        self.confirmed_subscriptions = set()  # Track confirmed subscriptions
+        # Subscription handshaking - ensures ROS2 subscribers are ready
+        self.pending_subscriptions = {}
+        self.confirmed_subscriptions = set()
         
         # Pre-allocate commonly used objects to reduce allocations
         self._sim_time_msg_template = {"sim_time": 0.0}
-        # Pre-serialize for even better performance
+        # Pre-serialize for better performance
         self._subscription_request_template = {
             "subscription_request": True,
             "namespace": self.namespace,
@@ -97,29 +106,28 @@ class RosBridgeHandler(sysModel.SysModel):
             "request_id": ""
         }
         
-        # Discover available BSK message types
-        self._discover_bsk_messages()
-        
-        # State tracking variables
+        # State tracking
         self.last_heartbeat_time = None
         self._running = True
         self._heartbeat_was_lost = False
         self._initialization_complete = False
         
-        # Initialize ZMQ communication (done in __init__ as per Basilisk pattern)
+        # Initialize components
+        self._discover_bsk_messages()
         self._setup_zmq_communication()
-        
-        # Wait for bridge heartbeat before proceeding
         self._wait_for_bridge_connection()
         
         self._initialization_complete = True
-        
+
+    # =========================================================================
+    # INITIALIZATION AND DISCOVERY
+    # =========================================================================
+    
     def _discover_bsk_messages(self):
         """Automatically discover all BSK message types in Basilisk.architecture.messaging."""
         self.bsk_msg_types = {}
 
         try:
-            # Recursively walk all submodules in messaging
             for finder, modname, ispkg in list(pkgutil.walk_packages(messaging_pkg.__path__, messaging_pkg.__name__ + ".")):
                 try:
                     mod = importlib.import_module(modname)
@@ -137,9 +145,102 @@ class RosBridgeHandler(sysModel.SysModel):
 
         print(f"[{self.namespace}] Discovered {len(self.bsk_msg_types)} BSK message types")
 
+    def _setup_zmq_communication(self):
+        """
+        Initialize ZMQ sockets with shared context for multi-spacecraft support.
+        """
+        global _shared_context, _shared_sockets
+        
+        if _shared_context is None:
+            _shared_context = zmq.Context()
+        self.context = _shared_context
+        
+        self._setup_heartbeat_monitoring()
+        self._setup_data_publisher()
+        self._setup_command_subscriber()
+        
+    def _setup_heartbeat_monitoring(self):
+        """Setup background heartbeat monitoring for connection health."""
+        self.heartbeat_sub = self.context.socket(zmq.SUB)
+        self.heartbeat_sub.connect(f"tcp://localhost:{self.heartbeat_port}")
+        self.heartbeat_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.heartbeat_sub.setsockopt(zmq.RCVTIMEO, 10)
+
+        def heartbeat_monitor():
+            """Background thread - monitors bridge health via heartbeat."""
+            while self._running:
+                try:
+                    self.heartbeat_sub.recv_string(flags=zmq.NOBLOCK)
+                    self.last_heartbeat_time = time.time()
+                except zmq.Again:
+                    time.sleep(0.01)
+                except (zmq.ZMQError, zmq.ContextTerminated) as e:
+                    if self._running and self._initialization_complete:
+                        print(f"[{self.namespace}] Heartbeat monitoring stopped: {e}")
+                    break
+                except Exception as e:
+                    if self._initialization_complete and self._running:
+                        print(f"[{self.namespace}] Heartbeat monitoring error: {e}")
+                    time.sleep(0.1)
+        
+        self.heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
+        self.heartbeat_thread.start()
+        
+    def _setup_data_publisher(self):
+        """
+        Setup shared ZMQ publisher for BSK -> ROS2 data flow.
+        """
+        global _shared_sockets
+        
+        socket_key = f"send_{self.send_port}"
+        
+        if socket_key not in _shared_sockets:
+            self.send_socket = self.context.socket(zmq.PUB)
+            self.send_socket.setsockopt(zmq.LINGER, 0)
+            self.send_socket.setsockopt(zmq.SNDHWM, 100)  # Prevent memory buildup
+            
+            try:
+                self.send_socket.bind(f"tcp://*:{self.send_port}")
+                _shared_sockets[socket_key] = self.send_socket
+                print(f"[{self.namespace}] Created and bound shared publisher on port {self.send_port}")
+            except zmq.ZMQError as e:
+                error_msg = f"Failed to bind to port {self.send_port}: {e}"
+                print(f"ERROR: {error_msg}")
+                self._init_error = error_msg
+                raise RuntimeError(error_msg)
+        else:
+            self.send_socket = _shared_sockets[socket_key]
+            print(f"[{self.namespace}] Using shared publisher on port {self.send_port}")
+
+    def _setup_command_subscriber(self):
+        """Setup ZMQ subscriber for ROS2 -> BSK commands."""
+        self.receive_socket = self.context.socket(zmq.SUB)
+        self.receive_socket.connect(f"tcp://localhost:{self.receive_port}")
+        self.receive_socket.setsockopt_string(zmq.SUBSCRIBE, '')
+        self.receive_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest
+        self.receive_socket.setsockopt(zmq.RCVTIMEO, 1)   # Non-blocking
+
+    def _wait_for_bridge_connection(self):
+        """Block until bridge heartbeat detected - ensures bridge is ready."""
+        print(f"[{self.namespace}] Waiting for bridge heartbeat...")
+        start_time = time.time()
+        
+        while self.last_heartbeat_time is None:
+            if time.time() - start_time > self.timeout:
+                error_msg = f"Timeout waiting for bridge heartbeat after {self.timeout}s"
+                print(f"ERROR: {error_msg}")
+                raise TimeoutError(error_msg)
+            time.sleep(0.01)
+            
+        print(f"[{self.namespace}] Bridge heartbeat detected. Module ready.")
+
+    # =========================================================================
+    # DYNAMIC MESSAGE HANDLING
+    # =========================================================================
+
     def add_bsk_msg_reader(self, msg_type_name, reader_name=None, topic_name=None):
         """
-        Add a BSK message reader for automatic publishing to ROS2.
+        Add BSK message reader for automatic publishing to ROS2.
         
         Args:
             msg_type_name (str): BSK message type name (e.g., 'SCStatesMsgPayload')
@@ -147,30 +248,18 @@ class RosBridgeHandler(sysModel.SysModel):
             topic_name (str): Optional custom topic name (e.g., 'imu_1', 'imu_2')
         """
         if msg_type_name not in self.bsk_msg_types:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
-                                     f"Unknown BSK message type: {msg_type_name}")
-            else:
-                print(f"ERROR: Unknown BSK message type: {msg_type_name}")
+            self._log_error(f"Unknown BSK message type: {msg_type_name}")
             return None
             
         reader_name = reader_name or f"{msg_type_name.lower()}_reader"
+        topic_name = topic_name or self._msg_type_to_topic_name(msg_type_name)
         
-        # If no custom topic name provided, use automatic conversion
-        if topic_name is None:
-            topic_name = self._msg_type_to_topic_name(msg_type_name)
-        
-        # Automatically generate reader class name: 'SCStatesMsgPayload' -> 'SCStatesMsgReader'
         try:
             reader_class_name = msg_type_name.replace('MsgPayload', 'MsgReader')
             reader_class = getattr(messaging, reader_class_name)
             reader = reader_class()
         except AttributeError:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
-                                     f"No reader found for message type: {msg_type_name} (tried {reader_class_name})")
-            else:
-                print(f"ERROR: No reader found for message type: {msg_type_name} (tried {reader_class_name})")
+            self._log_error(f"No reader found for message type: {msg_type_name} (tried {reader_class_name})")
             return None
         
         self.input_msg_readers[reader_name] = {
@@ -179,19 +268,14 @@ class RosBridgeHandler(sysModel.SysModel):
             'topic_name': topic_name
         }
         
-        # Make reader accessible as module attribute
         setattr(self, reader_name, reader)
         
-        if hasattr(self, 'bskLogger') and self.bskLogger:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                 f"Added BSK message reader: {reader_name} ({msg_type_name}) -> /{self.namespace}/bsk/out/{topic_name}")
-        else:
-            print(f"[{self.namespace}] Added BSK message reader: {reader_name} ({msg_type_name}) -> /{self.namespace}/bsk/out/{topic_name}")
+        self._log_info(f"Added BSK message reader: {reader_name} ({msg_type_name}) -> /{self.namespace}/bsk/out/{topic_name}")
         return reader
 
     def add_bsk_msg_writer(self, msg_type_name, writer_name=None, topic_name=None):
         """
-        Add a BSK message writer for automatic subscription from ROS2.
+        Add BSK message writer for automatic subscription from ROS2.
         
         Args:
             msg_type_name (str): BSK message type name (e.g., 'CmdForceBodyMsgPayload')
@@ -199,54 +283,40 @@ class RosBridgeHandler(sysModel.SysModel):
             topic_name (str): Optional custom topic name (e.g., 'thruster_1', 'thruster_2')
         """
         if msg_type_name not in self.bsk_msg_types:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
-                                     f"Unknown BSK message type: {msg_type_name}")
-            else:
-                print(f"ERROR: Unknown BSK message type: {msg_type_name}")
+            self._log_error(f"Unknown BSK message type: {msg_type_name}")
             return None
             
         writer_name = writer_name or f"{msg_type_name.lower()}_writer"
+        topic_name = topic_name or self._msg_type_to_topic_name(msg_type_name)
         
-        # If no custom topic name provided, use automatic conversion
-        if topic_name is None:
-            topic_name = self._msg_type_to_topic_name(msg_type_name)
-        
-        # Automatically generate writer class name: 'CmdForceBodyMsgPayload' -> 'CmdForceBodyMsg'
         try:
             writer_class_name = msg_type_name.replace('MsgPayload', 'Msg')
             writer_class = getattr(messaging, writer_class_name)
             writer = writer_class()
         except AttributeError:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
-                                     f"No writer found for message type: {msg_type_name} (tried {writer_class_name})")
-            else:
-                print(f"ERROR: No writer found for message type: {msg_type_name} (tried {writer_class_name})")
+            self._log_error(f"No writer found for message type: {msg_type_name} (tried {writer_class_name})")
             return None
         
-        # Store only the writer
         self.output_msg_writers[writer_name] = {
             'writer': writer,
             'msg_type': msg_type_name,
             'topic_name': topic_name
         }
         
-        # Make writer accessible as module attribute  
         setattr(self, writer_name, writer)
-        
-        # Send subscription request to bridge
         self._send_subscription_request(msg_type_name, topic_name)
         
-        if hasattr(self, 'bskLogger') and self.bskLogger:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                 f"Added BSK message writer: {writer_name} ({msg_type_name}) <- /{self.namespace}/bsk/in/{topic_name}")
-        else:
-            print(f"[{self.namespace}] Added BSK message writer: {writer_name} ({msg_type_name}) <- /{self.namespace}/bsk/in/{topic_name}")
+        self._log_info(f"Added BSK message writer: {writer_name} ({msg_type_name}) <- /{self.namespace}/bsk/in/{topic_name}")
         return writer
 
+    # =========================================================================
+    # SUBSCRIPTION MANAGEMENT
+    # =========================================================================
+
     def _send_subscription_request(self, msg_type_name, topic_name):
-        """Send subscription request to bridge for automatic subscriber creation."""
+        """
+        Send subscription request to bridge for automatic ROS2 subscriber creation.
+        """
         try:
             request_id = f"{self.namespace}_{msg_type_name}_{topic_name}"
             
@@ -256,7 +326,6 @@ class RosBridgeHandler(sysModel.SysModel):
                 "request_id": request_id
             })
             
-            # Track pending request
             current_time = time.time()
             self.pending_subscriptions[request_id] = {
                 "msg_type": msg_type_name,
@@ -265,27 +334,18 @@ class RosBridgeHandler(sysModel.SysModel):
                 "last_attempt": current_time
             }
             
-            # Send as bytes directly
             self.send_socket.send(json_dumps(self._subscription_request_template), flags=zmq.NOBLOCK)
             
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                     f"Sent subscription request for {msg_type_name} -> /{self.namespace}/bsk/in/{topic_name} (ID: {request_id})")
-            else:
-                print(f"[{self.namespace}] Sent subscription request for {msg_type_name} -> /{self.namespace}/bsk/in/{topic_name} (ID: {request_id})")
+            self._log_info(f"Sent subscription request for {msg_type_name} -> /{self.namespace}/bsk/in/{topic_name} (ID: {request_id})")
                 
         except Exception as e:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
-                                     f"Error sending subscription request: {e}")
-            else:
-                print(f"ERROR: Error sending subscription request: {e}")
+            self._log_error(f"Error sending subscription request: {e}")
 
     def _check_pending_subscriptions(self):
         """Check for pending subscription requests and retry if needed."""
         current_time = time.time()
         max_attempts = 10
-        retry_interval = 2.0  # seconds
+        retry_interval = 2.0
         
         for request_id in list(self.pending_subscriptions.keys()):
             if request_id in self.confirmed_subscriptions:
@@ -302,7 +362,6 @@ class RosBridgeHandler(sysModel.SysModel):
                     request_info["attempts"] += 1
                     request_info["last_attempt"] = current_time
                     
-                    # Reuse template for retry
                     self._subscription_request_template.update({
                         "msg_type": request_info["msg_type"],
                         "topic_name": request_info["topic_name"],
@@ -311,13 +370,19 @@ class RosBridgeHandler(sysModel.SysModel):
                     
                     try:
                         self.send_socket.send(json_dumps(self._subscription_request_template), flags=zmq.NOBLOCK)
-                        print(f"[{self.namespace}] Retrying subscription request {request_id} (attempt {request_info['attempts']}/{max_attempts})")
+                        if request_info['attempts'] > 1:
+                            # Log retries only after the first attempt
+                            print(f"[{self.namespace}] Retrying subscription request {request_id} (attempt {request_info['attempts']}/{max_attempts})")
                     except Exception as e:
                         print(f"ERROR: Failed to retry subscription request {request_id}: {e}")
                 else:
                     # Max attempts reached
                     print(f"[{self.namespace}] WARNING: Subscription request {request_id} failed after {max_attempts} attempts")
                     del self.pending_subscriptions[request_id]
+
+    # =========================================================================
+    # MESSAGE CONVERSION - Optimized with caching
+    # =========================================================================
 
     def _msg_type_to_topic_name(self, msg_type_name):
         """
@@ -330,8 +395,6 @@ class RosBridgeHandler(sysModel.SysModel):
             
         # Remove 'MsgPayload' suffix if present
         name = msg_type_name[:-10] if msg_type_name.endswith('MsgPayload') else msg_type_name
-        
-        # Use pre-compiled regex for efficient conversion
         topic_name = CAMEL_TO_SNAKE_RE.sub('_', name).lower()
         
         self._topic_name_cache[msg_type_name] = topic_name
@@ -362,7 +425,6 @@ class RosBridgeHandler(sysModel.SysModel):
                 attr_value = getattr(msg_payload, attr_name)
                 ros2_field_name = attr_name.lower()
                 
-                # Optimized type handling
                 if isinstance(attr_value, (int, float, str, bool)):
                     json_data[ros2_field_name] = attr_value
                 elif attr_value is None:
@@ -383,15 +445,16 @@ class RosBridgeHandler(sysModel.SysModel):
         return json_data
 
     def normalize_field_name(self, field_name):
-        """Normalize field names to lowercase, underscore-agnostic using cached regex."""
+        """Normalize field names for case-insensitive matching."""
         return NORMALIZE_FIELD_RE.sub('', field_name).lower()
 
     def _json_to_bsk_msg(self, json_data, msg_type_name):
-        """Robustly convert JSON dict to BSK message payload with optimized caching."""
+        """
+        Convert JSON to BSK message with robust field matching.
+        """
         msg_payload_class = self.bsk_msg_types[msg_type_name]
         msg_payload = msg_payload_class()
 
-        # Generate field mapping once per message type
         if msg_type_name not in self._field_mapping_cache:
             bsk_field_mapping = {}
             swig_attrs_to_skip = {'this', 'thisown'}
@@ -432,107 +495,13 @@ class RosBridgeHandler(sysModel.SysModel):
 
         return msg_payload
 
+    # =========================================================================
+    # BASILISK MODULE INTERFACE - Required by SysModel
+    # =========================================================================
 
-    def _setup_zmq_communication(self):
-        """Setup all ZMQ sockets and communication channels."""
-        global _shared_context, _shared_sockets
-        
-        # Use shared context for multi-spacecraft scenarios
-        if _shared_context is None:
-            _shared_context = zmq.Context()
-        self.context = _shared_context
-        
-        # Setup heartbeat monitoring
-        self._setup_heartbeat_monitoring()
-        
-        # Setup data publisher (BSK -> ROS2) - use shared socket
-        self._setup_data_publisher()
-        
-        # Setup command subscriber (ROS2 -> BSK)
-        self._setup_command_subscriber()
-        
-    def _setup_heartbeat_monitoring(self):
-        """Setup heartbeat monitoring from bridge."""
-        self.heartbeat_sub = self.context.socket(zmq.SUB)
-        self.heartbeat_sub.connect(f"tcp://localhost:{self.heartbeat_port}")
-        self.heartbeat_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        self.heartbeat_sub.setsockopt(zmq.RCVTIMEO, 10)  # 10ms timeout
-
-        def heartbeat_monitor():
-            """Background thread to monitor bridge heartbeat."""
-            while self._running:
-                try:
-                    self.heartbeat_sub.recv_string(flags=zmq.NOBLOCK)
-                    self.last_heartbeat_time = time.time()
-                except zmq.Again:
-                    time.sleep(0.01)
-                except (zmq.ZMQError, zmq.ContextTerminated) as e:
-                    if self._running and self._initialization_complete:
-                        print(f"[{self.namespace}] Heartbeat monitoring stopped: {e}")
-                    break
-                except Exception as e:
-                    if self._initialization_complete and self._running:
-                        print(f"[{self.namespace}] Heartbeat monitoring error: {e}")
-                    time.sleep(0.1)
-        
-        self.heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
-        self.heartbeat_thread.start()
-        
-    def _setup_data_publisher(self):
-        """Setup ZMQ publisher for sending data to bridge."""
-        global _shared_sockets
-        
-        # Use shared socket for all spacecraft to avoid port conflicts
-        socket_key = f"send_{self.send_port}"
-        
-        if socket_key not in _shared_sockets:
-            # First handler creates and binds the socket
-            self.send_socket = self.context.socket(zmq.PUB)
-            self.send_socket.setsockopt(zmq.LINGER, 0)
-            self.send_socket.setsockopt(zmq.SNDHWM, 100)  # High water mark
-            
-            try:
-                self.send_socket.bind(f"tcp://*:{self.send_port}")
-                _shared_sockets[socket_key] = self.send_socket
-                print(f"[{self.namespace}] Created and bound shared publisher on port {self.send_port}")
-            except zmq.ZMQError as e:
-                error_msg = f"Failed to bind to port {self.send_port}: {e}"
-                print(f"ERROR: {error_msg}")
-                self._init_error = error_msg
-                raise RuntimeError(error_msg)
-        else:
-            # Subsequent handlers use the existing socket
-            self.send_socket = _shared_sockets[socket_key]
-            print(f"[{self.namespace}] Using shared publisher on port {self.send_port}")
-            
-    def _setup_command_subscriber(self):
-        """Setup ZMQ subscriber for receiving commands from bridge."""
-        self.receive_socket = self.context.socket(zmq.SUB)
-        self.receive_socket.connect(f"tcp://localhost:{self.receive_port}")
-        self.receive_socket.setsockopt_string(zmq.SUBSCRIBE, '')
-        self.receive_socket.setsockopt(zmq.CONFLATE, 1)  # Keep only latest message
-        self.receive_socket.setsockopt(zmq.RCVTIMEO, 1)   # 1ms timeout
-        
-    def _wait_for_bridge_connection(self):
-        """Wait for the first heartbeat before starting operations."""
-        print(f"[{self.namespace}] Waiting for bridge heartbeat...")
-        start_time = time.time()
-        
-        while self.last_heartbeat_time is None:
-            if time.time() - start_time > self.timeout:
-                error_msg = f"Timeout waiting for bridge heartbeat after {self.timeout}s"
-                print(f"ERROR: {error_msg}")
-                raise TimeoutError(error_msg)
-            time.sleep(0.01)
-            
-        print(f"[{self.namespace}] Bridge heartbeat detected. Module ready.")
-        
     def Reset(self, CurrentSimNanos):
         """
         Reset method called to initialize persistent data to ready state.
-        
-        This method is called once after selfInit/crossInit, but should be
-        written to allow multiple calls if necessary.
         
         Args:
             CurrentSimNanos (int): Current simulation time in nanoseconds
@@ -540,24 +509,12 @@ class RosBridgeHandler(sysModel.SysModel):
         # Validate message connections - this follows Basilisk best practices
         for reader_name, reader_info in self.input_msg_readers.items():
             if not reader_info['reader'].isLinked():
-                if hasattr(self, 'bskLogger') and self.bskLogger:
-                    self.bskLogger.bskLog(sysModel.BSK_WARNING, 
-                                         f"Reader {reader_name} is not connected.")
-                else:
-                    print(f"WARNING: Reader {reader_name} is not connected.")
+                self._log_warning(f"Reader {reader_name} is not connected.")
         
-        # Don't initialize output messages to zero - they should receive data from ROS2
-        # Only validate that they exist
         for writer_name, writer_info in self.output_msg_writers.items():
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_DEBUG, 
-                                     f"Output writer {writer_name} ready to receive commands from ROS2")
+            self._log_debug(f"Output writer {writer_name} ready to receive commands from ROS2")
             
-        if hasattr(self, 'bskLogger') and self.bskLogger:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                 f"Reset complete for RosBridgeHandler namespace: {self.namespace}")
-        else:
-            print(f"[{self.namespace}] Reset complete for RosBridgeHandler")
+        self._log_info(f"Reset complete for RosBridgeHandler namespace: {self.namespace}")
         return
 
     def UpdateState(self, CurrentSimNanos):
@@ -592,9 +549,12 @@ class RosBridgeHandler(sysModel.SysModel):
         # Receive and process commands from ROS2
         self._receive_and_process_commands(CurrentSimNanos)
 
+    # =========================================================================
+    # RUNTIME COMMUNICATION METHODS
+    # =========================================================================
+
     def _check_bridge_health(self):
         """Check if bridge heartbeat is healthy."""
-        # Use simulation time for logging, but keep wall time for heartbeat timeout
         now = time.time()
         if self.last_heartbeat_time is None or (now - self.last_heartbeat_time > 1.0):
             if not self._heartbeat_was_lost:
@@ -608,19 +568,16 @@ class RosBridgeHandler(sysModel.SysModel):
             return True
             
     def _publish_sim_time(self, CurrentSimNanos):
-        """Publish simulation time to ROS2."""
+        """Publish simulation time for ROS2 synchronization."""
         try:
             # Reuse pre-allocated template for better performance
             self._sim_time_msg_template["sim_time"] = CurrentSimNanos * 1.0E-9
             self.send_socket.send(json_dumps(self._sim_time_msg_template), flags=zmq.NOBLOCK)
         except Exception as e:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, f"Error publishing sim_time: {e}")
-            else:
-                print(f"ERROR: Error publishing sim_time: {e}")
+            self._log_error(f"Error publishing sim_time: {e}")
 
     def _publish_bsk_message(self, CurrentSimNanos, msg_payload, msg_type_name):
-        """Publish any BSK message to ROS2."""
+        """Publish BSK message data to ROS2 via bridge."""
         try:
             # Find the topic name for this message type
             topic_name = None
@@ -632,52 +589,41 @@ class RosBridgeHandler(sysModel.SysModel):
             if topic_name is None:
                 topic_name = self._msg_type_to_topic_name(msg_type_name)
 
-            # Optimized timestamp handling
+            # Update timestamp if message supports it
             if hasattr(msg_payload, "stamp"):
                 secs = int(CurrentSimNanos // 1_000_000_000)
                 nsecs = int(CurrentSimNanos % 1_000_000_000)
                 try:
-                    # If stamp is a message object with sec/nanosec fields
                     if hasattr(msg_payload.stamp, "sec") and hasattr(msg_payload.stamp, "nanosec"):
                         msg_payload.stamp.sec = secs
                         msg_payload.stamp.nanosec = nsecs
-                    # If stamp is a dict or similar
                     elif isinstance(msg_payload.stamp, dict):
                         msg_payload.stamp["sec"] = secs
                         msg_payload.stamp["nanosec"] = nsecs
-                    # If stamp is None or uninitialized, try to set as dict
                     elif msg_payload.stamp is None:
                         msg_payload.stamp = {"sec": secs, "nanosec": nsecs}
                 except Exception:
                     pass
 
-            # Convert BSK message to JSON (will include the updated stamp)
             json_data = self._bsk_msg_to_json(msg_payload, msg_type_name, CurrentSimNanos)
 
-            # Add metadata for the bridge
             msg = {
                 "namespace": self.namespace,
                 "msg_type": msg_type_name,
                 "topic_name": topic_name,
-                "time": CurrentSimNanos * 1e-9,  # Avoid float() conversion
-                **json_data  # Use unpacking for efficiency
+                "time": CurrentSimNanos * 1e-9,
+                **json_data
             }
 
-            # Send as bytes directly
             self.send_socket.send(json_dumps(msg), flags=zmq.NOBLOCK)
 
         except Exception as e:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR,
-                                     f"Error publishing {msg_type_name}: {e}")
-            else:
-                print(f"ERROR: Error publishing {msg_type_name}: {e}")
+            self._log_error(f"Error publishing {msg_type_name}: {e}")
 
     def _receive_and_process_commands(self, CurrentSimNanos):
-        """Receive and process any BSK message commands from ROS2."""
+        """Process incoming commands from ROS2."""
         try:
-            while True:  # Process all available messages
-                # Receive as bytes, orjson handles bytes input efficiently
+            while True:
                 ros_msg_bytes = self.receive_socket.recv(flags=zmq.NOBLOCK)
                 command_data = json_loads(ros_msg_bytes)
                 
@@ -690,11 +636,7 @@ class RosBridgeHandler(sysModel.SysModel):
                     request_id = command_data.get('request_id')
                     if request_id:
                         self.confirmed_subscriptions.add(request_id)
-                        if hasattr(self, 'bskLogger') and self.bskLogger:
-                            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                                 f"Received subscription confirmation for {request_id}")
-                        else:
-                            print(f"[{self.namespace}] Received subscription confirmation for {request_id}")
+                        self._log_info(f"Received subscription confirmation for {request_id}")
                     continue
                     
                 msg_type_name = command_data.get('msg_type')
@@ -712,67 +654,41 @@ class RosBridgeHandler(sysModel.SysModel):
                     # Convert JSON to BSK message and write
                     msg_payload = self._json_to_bsk_msg(command_data, msg_type_name)
                     writer_info['writer'].write(msg_payload, CurrentSimNanos, self.moduleID)
-                    
-                    # Cache the data
                     self.last_msg_data[msg_type_name] = command_data
                     
         except zmq.Again:
-            # No more messages available
-            pass
+            pass  # No more messages
         except Exception as e:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_ERROR, 
-                                     f"Error processing commands: {e}")
-            else:
-                print(f"ERROR: Error processing commands: {e}")
+            self._log_error(f"Error processing commands: {e}")
 
-    def shutdown(self):
-        """
-        Graceful shutdown of the bridge handler.
-        
-        Stops all background threads, closes ZMQ sockets, and cleans up resources.
-        """
-        if not hasattr(self, '_running') or not self._running:
-            return  # Already shut down
-            
-        self._running = False
-        
-        # Wait for heartbeat thread to finish
-        if hasattr(self, 'heartbeat_thread') and self.heartbeat_thread.is_alive():
-            self.heartbeat_thread.join(timeout=1.0)
-        
-        # Close all sockets
-        try:
-            if hasattr(self, 'receive_socket'):
-                self.receive_socket.close()
-            if hasattr(self, 'heartbeat_sub'):
-                self.heartbeat_sub.close()
-        except Exception as e:
-            if hasattr(self, 'bskLogger') and self.bskLogger:
-                self.bskLogger.bskLog(sysModel.BSK_WARNING, f"Error during socket cleanup: {e}")
-            else:
-                print(f"Warning: Error during socket cleanup: {e}")
-        
-        if hasattr(self, 'bskLogger') and self.bskLogger:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, 
-                                 f"RosBridgeHandler [{self.namespace}] shutdown complete")
-        else:
-            print(f"[{self.namespace}] RosBridgeHandler shutdown complete")
+    # =========================================================================
+    # LOGGING UTILITIES
+    # =========================================================================
 
-    def send_kill_signal(self):
-        """
-        Shutdown the bridge handler.
-        
-        Returns:
-            bool: True indicating successful shutdown
-        """
-        global delay_count
-        print(f'[{self.namespace}] Delayed count for actuation messages: {delay_count}')
-        
+    def _log_info(self, message):
+        """Unified info logging."""
         if hasattr(self, 'bskLogger') and self.bskLogger:
-            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, "Shutdown initiated")
+            self.bskLogger.bskLog(sysModel.BSK_INFORMATION, message)
         else:
-            print(f"[{self.namespace}] Shutdown initiated")
-        
-        self.shutdown()
-        return True
+            print(f"[{self.namespace}] {message}")
+
+    def _log_warning(self, message):
+        """Unified warning logging."""
+        if hasattr(self, 'bskLogger') and self.bskLogger:
+            self.bskLogger.bskLog(sysModel.BSK_WARNING, message)
+        else:
+            print(f"[{self.namespace}] WARNING: {message}")
+
+    def _log_error(self, message):
+        """Unified error logging."""
+        if hasattr(self, 'bskLogger') and self.bskLogger:
+            self.bskLogger.bskLog(sysModel.BSK_ERROR, message)
+        else:
+            print(f"[{self.namespace}] ERROR: {message}")
+
+    def _log_debug(self, message):
+        """Unified debug logging."""
+        if hasattr(self, 'bskLogger') and self.bskLogger:
+            self.bskLogger.bskLog(sysModel.BSK_DEBUG, message)
+        else:
+            print(f"[{self.namespace}] DEBUG: {message}")
