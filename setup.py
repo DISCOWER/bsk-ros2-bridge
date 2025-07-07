@@ -13,7 +13,7 @@ setup(
         (f'share/{package_name}', ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob(package_name +'/launch/*.launch.py')),
     ],
-    install_requires=['setuptools', 'pyzmq'],
+    install_requires=['setuptools', 'pyzmq', 'orjson'],
     zip_safe=True,
     maintainer='Elias Krantz',
     maintainer_email='eliaskra@kth.se',

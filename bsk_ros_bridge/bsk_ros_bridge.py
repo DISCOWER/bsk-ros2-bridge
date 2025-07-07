@@ -1,16 +1,27 @@
 import rclpy
 from rclpy.node import Node
-from bsk_msgs.msg import *
 from std_msgs.msg import Float64
-import zmq, json, threading, os, time, importlib, inspect
-from ament_index_python.packages import get_package_share_directory
+import zmq
+import threading
+import orjson
+import inspect
+import re
 
 # Constants
 DEFAULT_SUB_PORT = 5550              # ZMQ port for receiving data from Basilisk
 DEFAULT_PUB_PORT = 5551              # ZMQ port for sending data to Basilisk
 DEFAULT_HEARTBEAT_PORT = 5552        # ZMQ port for heartbeat/keep-alive messages
-DEFAULT_TIMEOUT = 15                 # General timeout in seconds (unused currently)
 HEARTBEAT_INTERVAL_SEC = 0.1         # Heartbeat ping interval (100ms)
+
+# Pre-compiled regex for camelCase conversion
+CAMEL_TO_SNAKE_RE = re.compile(r'(?<!^)(?=[A-Z])')
+
+# Using orjson for fast JSON processing
+def json_loads(data): 
+    return orjson.loads(data)
+
+def json_dumps(data): 
+    return orjson.dumps(data)  # Return bytes directly
 
 class BskRosBridge(Node):
     """
@@ -18,21 +29,27 @@ class BskRosBridge(Node):
     Automatically handles BSK message types and creates topics dynamically.
     """
     _field_mapping_cache = {}  # Cache for lowercase field name mapping per message type
+    _topic_name_cache = {}     # Cache for topic name conversions
 
-    def __init__(self, sub_port=DEFAULT_SUB_PORT, pub_port=DEFAULT_PUB_PORT, 
-                 heartbeat_port=DEFAULT_HEARTBEAT_PORT, timeout=DEFAULT_TIMEOUT):
+    def __init__(self, sub_port=DEFAULT_SUB_PORT, pub_port=DEFAULT_PUB_PORT, heartbeat_port=DEFAULT_HEARTBEAT_PORT):
         super().__init__('bsk_ros_bridge')
         self.stop_event = threading.Event()
 
-        self.sub_port = sub_port
-        self.pub_port = pub_port
-        self.heartbeat_port = heartbeat_port
-        self.timeout = timeout
+        # Declare parameters for port configuration
+        self.declare_parameter('sub_port', sub_port)
+        self.declare_parameter('pub_port', pub_port)
+        self.declare_parameter('heartbeat_port', heartbeat_port)
+
+        # Get port values from parameters (allows launch-time configuration)
+        self.sub_port = self.get_parameter('sub_port').get_parameter_value().integer_value
+        self.pub_port = self.get_parameter('pub_port').get_parameter_value().integer_value
+        self.heartbeat_port = self.get_parameter('heartbeat_port').get_parameter_value().integer_value
+
         self.bridge_publishers = {}
         self.bridge_subscribers = {}
         self.zmq_context = zmq.Context()
-        self._msg_type_cache = {}  # Cache for message types
         self._bsk_msg_types = {}   # Cache for BSK message types by name
+        self._sim_time_msg = Float64()
         
         # Discover all BSK message types
         self._discover_bsk_message_types()
@@ -41,135 +58,95 @@ class BskRosBridge(Node):
         self.setup_zmq()
         self.listener_thread = threading.Thread(target=self.zmq_listener, daemon=True)
         self.listener_thread.start()
-        self.get_logger().info("Bridge initialised successfully.")
+        self.get_logger().info(f"Bridge initialised successfully on ports {self.sub_port}/{self.pub_port}/{self.heartbeat_port}.")
         self.sim_time_pub = self.create_publisher(Float64, '/bsk_sim_time', 10)
 
     def _discover_bsk_message_types(self):
         """Discover all BSK message types from bsk_msgs.msg module."""
         try:
             import bsk_msgs.msg as bsk_msgs
-            for name in dir(bsk_msgs):
-                # Skip built-in attributes
-                if name.startswith('_'):
-                    continue
-                    
-                obj = getattr(bsk_msgs, name)
-                # Look for classes ending with 'MsgPayload'
-                if inspect.isclass(obj) and name.endswith('MsgPayload'):
-                    # Store both the class and its type name
-                    self._bsk_msg_types[name] = obj
-                    self.get_logger().debug(f"Discovered BSK message type: {name}")
+            # Use list comprehension for better performance
+            msg_classes = [
+                (name, getattr(bsk_msgs, name)) 
+                for name in dir(bsk_msgs) 
+                if not name.startswith('_') and 
+                   inspect.isclass(getattr(bsk_msgs, name)) and 
+                   name.endswith('MsgPayload')
+            ]
+            
+            self._bsk_msg_types = dict(msg_classes)
             self.get_logger().info(f"Discovered {len(self._bsk_msg_types)} BSK message types")
         except ImportError as e:
             self.get_logger().error(f"Failed to import bsk_msgs: {e}")
             raise
 
     def _bsk_type_to_topic_name(self, bsk_type_name):
-        """
-        Convert BSK message type to snake_case topic name.
-        E.g. 'SCStatesMsgPayload' -> 'sc_states'
-        E.g. 'THRArrayCmdForceMsgPayload' -> 'thr_array_cmd_force'
-        """
+        """Convert BSK message type to snake_case topic name with caching."""
+        if bsk_type_name in self._topic_name_cache:
+            return self._topic_name_cache[bsk_type_name]
+            
         # Remove 'MsgPayload' suffix if present
-        if bsk_type_name.endswith('MsgPayload'):
-            name = bsk_type_name[:-10]  # Remove 'MsgPayload'
-        else:
-            name = bsk_type_name
+        name = bsk_type_name[:-10] if bsk_type_name.endswith('MsgPayload') else bsk_type_name
         
-        # Convert CamelCase to snake_case
-        result = []
-        prev_char = ''
+        # Use regex for more efficient camelCase to snake_case conversion
+        topic_name = CAMEL_TO_SNAKE_RE.sub('_', name).lower()
         
-        for i, char in enumerate(name):
-            if char.isupper():
-                # Add underscore before uppercase if:
-                # 1. Not the first character AND
-                # 2. Previous character was lowercase OR next character is lowercase
-                if (i > 0 and 
-                    (prev_char.islower() or 
-                     (i + 1 < len(name) and name[i + 1].islower()))):
-                    result.append('_')
-                result.append(char.lower())
-            else:
-                result.append(char.lower())
-            prev_char = char
-        
-        return ''.join(result)
+        self._topic_name_cache[bsk_type_name] = topic_name
+        return topic_name
 
     def _json_to_bsk_msg(self, json_data, msg_type):
-        """Convert JSON data to BSK message instance using reflection."""
-        try:
-            msg = msg_type()
-            msg_type_name = msg_type.__name__
+        """Convert JSON data to BSK message instance using cached reflection."""
+        msg = msg_type()
+        msg_type_name = msg_type.__name__
 
-            # Use cached mapping if available
-            if msg_type_name not in self._field_mapping_cache:
-                bsk_field_mapping = {}
-                for field_name in msg.get_fields_and_field_types():
-                    bsk_field_mapping[field_name.lower()] = field_name
-                self._field_mapping_cache[msg_type_name] = bsk_field_mapping
+        # Use cached field mapping
+        if msg_type_name not in self._field_mapping_cache:
+            # Pre-compute field mapping once per message type
+            field_types = msg.get_fields_and_field_types()
+            bsk_field_mapping = {name.lower(): name for name in field_types}
+            self._field_mapping_cache[msg_type_name] = (bsk_field_mapping, field_types)
+        
+        bsk_field_mapping, field_types = self._field_mapping_cache[msg_type_name]
+
+        # Set fields from JSON data
+        for json_field_name, field_value in json_data.items():
+            # Special handling for timestamp
+            if json_field_name == "stamp" and hasattr(msg, "stamp") and isinstance(field_value, dict):
+                msg.stamp.sec = int(field_value.get("sec", 0))
+                msg.stamp.nanosec = int(field_value.get("nanosec", 0))
+                continue
+                
+            # Find ROS2 field name
+            if json_field_name in field_types:
+                ros_field_name = json_field_name
             else:
-                bsk_field_mapping = self._field_mapping_cache[msg_type_name]
-
-            # Set fields from JSON data
-            for json_field_name, field_value in json_data.items():
-                # Special handling for ROS2 builtin_interfaces/Time stamp
-                if json_field_name == "stamp" and hasattr(msg, "stamp") and isinstance(field_value, dict):
-                    try:
-                        if hasattr(msg.stamp, "sec") and hasattr(msg.stamp, "nanosec"):
-                            msg.stamp.sec = int(field_value.get("sec", 0))
-                            msg.stamp.nanosec = int(field_value.get("nanosec", 0))
-                        continue
-                    except Exception:
-                        continue
-                # Try to find the ROS2 field name (either direct match or via lowercase mapping)
-                ros_field_name = None
-                if hasattr(msg, json_field_name):
-                    ros_field_name = json_field_name
-                elif json_field_name.lower() in bsk_field_mapping:
-                    ros_field_name = bsk_field_mapping[json_field_name.lower()]
-                if ros_field_name and hasattr(msg, ros_field_name):
-                    try:
-                        # Ensure correct format for arrays (e.g., float64[3])
-                        attr_spec = msg.get_fields_and_field_types()[ros_field_name]
-                        if attr_spec.startswith('float64[') and isinstance(field_value, list):
-                            setattr(msg, ros_field_name, [float(x) for x in field_value])
-                        else:
-                            setattr(msg, ros_field_name, field_value)
-                    except Exception as e:
-                        self.get_logger().warn(f"Could not set {ros_field_name}: {e}")
-                        continue
-            return msg
-        except Exception as e:
-            self.get_logger().error(f"Error converting JSON to BSK message: {e}")
-            raise
+                ros_field_name = bsk_field_mapping.get(json_field_name.lower())
+            
+            if ros_field_name:
+                attr_spec = field_types[ros_field_name]
+                if attr_spec.startswith('float64[') and isinstance(field_value, list):
+                    setattr(msg, ros_field_name, [float(x) for x in field_value])
+                else:
+                    setattr(msg, ros_field_name, field_value)
+        return msg
 
     def _bsk_msg_to_json(self, msg):
-        """Convert BSK message to JSON dict using reflection."""
-        try:
-            json_data = {}
+        """Convert BSK message to JSON dict using cached field access."""
+        json_data = {}
+        
+        # Get field types once and iterate
+        for field_name in msg.get_fields_and_field_types():
+            field_value = getattr(msg, field_name)
             
-            # Get all fields from the message
-            for field_name in msg.get_fields_and_field_types():
-                if hasattr(msg, field_name):
-                    field_value = getattr(msg, field_name)
-                    
-                    # Special handling for builtin_interfaces/Time objects
-                    if hasattr(field_value, 'sec') and hasattr(field_value, 'nanosec'):
-                        json_data[field_name] = {
-                            'sec': int(field_value.sec),
-                            'nanosec': int(field_value.nanosec)
-                        }
-                    # Convert numpy arrays to lists if necessary
-                    elif hasattr(field_value, 'tolist'):
-                        json_data[field_name] = field_value.tolist()
-                    else:
-                        json_data[field_name] = field_value
-            
-            return json_data
-        except Exception as e:
-            self.get_logger().error(f"Error converting BSK message to JSON: {e}")
-            raise
+            # Handle special types efficiently
+            if hasattr(field_value, 'sec') and hasattr(field_value, 'nanosec'):
+                json_data[field_name] = {'sec': int(field_value.sec), 'nanosec': int(field_value.nanosec)}
+            elif hasattr(field_value, 'tolist'):
+                json_data[field_name] = field_value.tolist()
+            else:
+                json_data[field_name] = field_value
+        
+        return json_data
 
     def setup_zmq(self):
         """Initialize ZMQ sockets for Basilisk <-> ROS2 communication and heartbeat."""
@@ -177,28 +154,32 @@ class BskRosBridge(Node):
         self.sub_socket.connect(f"tcp://localhost:{self.sub_port}")
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
         self.sub_socket.setsockopt(zmq.CONFLATE, 1)
-        self.sub_socket.setsockopt(zmq.RCVTIMEO, 1000)
+        self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)
+        self.sub_socket.setsockopt(zmq.RCVHWM, 10)
 
         self.pub_socket = self.zmq_context.socket(zmq.PUB)
         self.pub_socket.bind(f"tcp://*:{self.pub_port}")
         self.pub_socket.setsockopt(zmq.LINGER, 0)
-        self.pub_socket.setsockopt(zmq.SNDHWM, 100)
+        self.pub_socket.setsockopt(zmq.SNDHWM, 50)
+        self.pub_socket.setsockopt(zmq.IMMEDIATE, 1)
 
         self.heartbeat_pub = self.zmq_context.socket(zmq.PUB)
         self.heartbeat_pub.bind(f"tcp://*:{self.heartbeat_port}")
         self.heartbeat_pub.setsockopt(zmq.LINGER, 0)
+        self.heartbeat_pub.setsockopt(zmq.SNDHWM, 1)
+
+        # Pre-serialize heartbeat message as bytes
+        self.heartbeat_msg = json_dumps({"msg": "ping"})
 
         def heartbeat_thread():
-            while not self.stop_event.is_set():
+            while not self.stop_event.wait(HEARTBEAT_INTERVAL_SEC):
                 try:
-                    msg = json.dumps({"msg": "ping", "time": time.time()})
-                    self.heartbeat_pub.send_string(msg, flags=zmq.NOBLOCK)
+                    self.heartbeat_pub.send(self.heartbeat_msg, flags=zmq.NOBLOCK)
                 except zmq.error.Again:
                     pass
                 except Exception:
                     break
-                if self.stop_event.wait(HEARTBEAT_INTERVAL_SEC):
-                    break
+                    
         self.heartbeat_thread = threading.Thread(target=heartbeat_thread, daemon=True)
         self.heartbeat_thread.start()
         self.get_logger().info("Bridge ZMQ sockets ready.")
@@ -208,47 +189,35 @@ class BskRosBridge(Node):
         self.get_logger().debug("ZMQ listener thread started")
         while not self.stop_event.is_set() and rclpy.ok():
             try:
-                msg_str = self.sub_socket.recv_string(flags=zmq.NOBLOCK)
-                data = json.loads(msg_str)
+                msg_bytes = self.sub_socket.recv(flags=zmq.NOBLOCK)  # Receive as bytes
+                data = json_loads(msg_bytes)
                 
                 # Validate message structure
                 if not isinstance(data, dict):
-                    self.get_logger().warn("Received non-dict message, skipping")
                     continue
 
                 # Handle subscription requests from BSK
                 if data.get('subscription_request', False):
                     self._handle_subscription_request(data)
-                    continue
-
-                # Special handling for /bsk_sim_time (no namespace)
-                if 'sim_time' in data:
-                    sim_time = data.get('sim_time', None)
+                elif 'sim_time' in data:
+                    sim_time = data['sim_time']
                     if sim_time is not None:
-                        msg = Float64()
-                        msg.data = float(sim_time)
-                        self.sim_time_pub.publish(msg)
-                    continue
-
-                # Handle BSK message types
-                msg_type_name = data.get('msg_type', None)
-                namespace = data.get('namespace', 'default')
-                
-                if msg_type_name and msg_type_name in self._bsk_msg_types:
-                    self._handle_bsk_message(data, namespace, msg_type_name)
+                        # Reuse pre-allocated message
+                        self._sim_time_msg.data = float(sim_time)
+                        self.sim_time_pub.publish(self._sim_time_msg)
                 else:
-                    self.get_logger().warn(f"Unknown message type: {msg_type_name}")
+                    # Handle BSK messages
+                    msg_type_name = data.get('msg_type')
+                    if msg_type_name and msg_type_name in self._bsk_msg_types:
+                        namespace = data.get('namespace', 'default')
+                        self._handle_bsk_message(data, namespace, msg_type_name)
                     
             except zmq.error.Again:
-                if self.stop_event.wait(0.001):
-                    break
-            except zmq.error.ZMQError as e:
-                self.get_logger().error(f"ZMQError in listener: {e}")
-                break
-            except json.JSONDecodeError as e:
-                self.get_logger().error(f"JSON decode error: {e}")
+                continue  # No message available, continue loop
+            except orjson.JSONDecodeError:
+                self.get_logger().debug("Invalid JSON received")
             except Exception as e:
-                self.get_logger().error(f"Unexpected error in ZMQ listener: {e}")
+                self.get_logger().error(f"Error in ZMQ listener: {e}")
                 break
         self.get_logger().debug("ZMQ listener thread exiting")
 
@@ -316,7 +285,7 @@ class BskRosBridge(Node):
                 }
                 
                 try:
-                    self.pub_socket.send_string(json.dumps(confirmation))
+                    self.pub_socket.send(json_dumps(confirmation), flags=zmq.NOBLOCK)
                     self.get_logger().debug(f"Sent subscription confirmation for {request_id}")
                 except Exception as e:
                     self.get_logger().error(f"Failed to send subscription confirmation: {e}")
@@ -327,6 +296,19 @@ class BskRosBridge(Node):
     def _handle_bsk_message(self, data, namespace, msg_type_name):
         """Handle incoming BSK message and publish to appropriate ROS topic."""
         try:
+            # Validate input data first
+            if not isinstance(data, dict):
+                self.get_logger().warn(f"Invalid data type for BSK message: {type(data)}")
+                return
+                
+            if not msg_type_name:
+                self.get_logger().warn("Missing msg_type_name in BSK message")
+                return
+                
+            if msg_type_name not in self._bsk_msg_types:
+                self.get_logger().warn(f"Unknown BSK message type: {msg_type_name}")
+                return
+
             # Use topic name from message if provided, otherwise convert from message type
             topic_name = data.get('topic_name')
             if topic_name is None:
@@ -352,11 +334,12 @@ class BskRosBridge(Node):
             
             # Convert JSON to BSK message and publish
             pub_info = self.bridge_publishers[namespace][topic_name]
+            
             bsk_msg = self._json_to_bsk_msg(data, pub_info['type'])
             pub_info['publisher'].publish(bsk_msg)
             
-        except Exception as e:
-            self.get_logger().error(f"Error handling BSK message {msg_type_name}: {e}")
+        except Exception:
+            pass
 
     def ros_to_basilisk_callback(self, msg, namespace, msg_type_name):
         """Handle ROS messages and send them to Basilisk via ZMQ"""
@@ -372,63 +355,34 @@ class BskRosBridge(Node):
                 **json_data
             }
             
-            json_msg = json.dumps(data)
-            self.pub_socket.send_string(json_msg)
+            json_bytes = json_dumps(data)  # Returns bytes directly
+            self.pub_socket.send(json_bytes, flags=zmq.NOBLOCK)
             self.get_logger().debug(f"Sent to Basilisk: {msg_type_name} for {namespace}")
             
+        except zmq.error.Again:
+            self.get_logger().debug("ZMQ send would block, message dropped")
         except Exception as e:
             self.get_logger().error(f"Error in ROS to Basilisk callback: {e}")
 
     def shutdown(self):
         """Cleanly shutdown bridge, sockets, and node."""
-        self.get_logger().info("Shutdown requested. Setting stop_event.")
+        self.get_logger().info("Shutting down bridge...")
         self.stop_event.set()
         
-        # Join threads with timeout for robust shutdown
         try:
-            self.get_logger().info("Waiting for threads to complete...")
-            if hasattr(self, 'listener_thread') and self.listener_thread.is_alive():
-                self.listener_thread.join(timeout=2.0)
-                if self.listener_thread.is_alive():
-                    self.get_logger().warn("Listener thread did not finish in time")
-                    
-            if hasattr(self, 'heartbeat_thread') and self.heartbeat_thread.is_alive():
-                self.heartbeat_thread.join(timeout=1.0)
-                if self.heartbeat_thread.is_alive():
-                    self.get_logger().warn("Heartbeat thread did not finish in time")
+            for socket in [self.sub_socket, self.pub_socket, self.heartbeat_pub]:
+                socket.setsockopt(zmq.LINGER, 0)
+                socket.close()
+            self.zmq_context.term()
         except Exception as e:
-            self.get_logger().error(f"Error joining threads: {e}")
-            
-        # Close ZMQ sockets with proper error handling
-        try:
-            self.get_logger().info("Closing ZMQ sockets...")
-            sockets_to_close = []
-            if hasattr(self, 'sub_socket'):
-                sockets_to_close.append(('sub_socket', self.sub_socket))
-            if hasattr(self, 'pub_socket'):
-                sockets_to_close.append(('pub_socket', self.pub_socket))
-            if hasattr(self, 'heartbeat_pub'):
-                sockets_to_close.append(('heartbeat_pub', self.heartbeat_pub))
-                
-            for name, socket in sockets_to_close:
-                try:
-                    socket.setsockopt(zmq.LINGER, 0)
-                    socket.close()
-                except Exception as e:
-                    self.get_logger().error(f"Error closing {name}: {e}")
-                    
-            if hasattr(self, 'zmq_context'):
-                self.zmq_context.term()
-        except Exception as e:
-            self.get_logger().error(f"Error closing ZMQ sockets: {e}")
-            
-        # Destroy ROS2 node
-        try:
-            self.get_logger().info("Destroying ROS2 node...")
-            super().destroy_node()
-        except Exception as e:
-            self.get_logger().error(f"Error destroying node: {e}")
-            
+            self.get_logger().error(f"Error closing ZMQ: {e}")
+        
+        # Wait for threads with shorter timeout
+        for thread in [self.listener_thread, self.heartbeat_thread]:
+            if thread.is_alive():
+                thread.join(timeout=1.0)
+        
+        super().destroy_node()
         self.get_logger().info("Bridge shutdown complete")
 
     def __enter__(self):
@@ -438,62 +392,22 @@ class BskRosBridge(Node):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with cleanup."""
         self.shutdown()
-        return False  # Don't suppress exceptions
-
-    def get_msg_class(self, type_str):
-        """
-        Import and return ROS message class from type string like 'geometry_msgs::msg::PoseStamped'
-        """
-        if type_str in self._msg_type_cache:
-            return self._msg_type_cache[type_str]
-        parts = type_str.split('::')
-        if len(parts) != 3:
-            raise ValueError(f"Invalid type string format: {type_str}")
-        pkg_name = parts[0]
-        msg_name = parts[2]
-        try:
-            module = importlib.import_module(f"{pkg_name}.msg")
-            msg_class = getattr(module, msg_name)
-            self._msg_type_cache[type_str] = msg_class
-            return msg_class
-        except (ImportError, AttributeError) as e:
-            self.get_logger().error(f"Failed to import message type {type_str}: {e}")
-            raise
+        return False
 
 def main(args=None):
-    """Main entry point with improved error handling."""
+    """Main entry point"""
     rclpy.init(args=args)
-    bridge = None
     
     try:
-        bridge = BskRosBridge()
-        
-        # Use context manager for cleaner resource management
-        with bridge:
+        with BskRosBridge() as bridge:
             rclpy.spin(bridge)
-            
     except KeyboardInterrupt:
-        if bridge:
-            bridge.get_logger().info("Keyboard interrupt received")
+        pass  # Normal shutdown
     except Exception as e:
-        error_msg = f"Unexpected error in main: {e}"
-        if bridge:
-            bridge.get_logger().error(error_msg)
-        else:
-            print(error_msg)
+        print(f"Bridge error: {e}")
     finally:
-        # Clean shutdown
-        if bridge:
-            try:
-                bridge.shutdown()
-            except Exception as e:
-                print(f"Error during bridge cleanup: {e}")
-        
-        try:
-            if rclpy.ok():
-                rclpy.shutdown()
-        except Exception as e:
-            print(f"Error during ROS2 shutdown: {e}")
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

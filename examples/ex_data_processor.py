@@ -49,8 +49,6 @@ class BasiliskDataProcessor(Node):
         timer_cmd_period = 0.1  # seconds
         self.create_timer(timer_cmd_period, self.cmd_callback)
         self.get_logger().info(f"Publishing to: {self.namespace}/bsk/in/cmd_force_body and {self.namespace}/bsk/in/cmd_torque_body")
-        
-        self.get_logger().info("Waiting for Basilisk data...")
 
     def sim_time_callback(self, msg: Float64):
         """Update simulation time from Basilisk."""
