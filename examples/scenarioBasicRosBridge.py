@@ -1,4 +1,3 @@
-import pytest
 import inspect, os, sys
 import argparse
 
@@ -8,44 +7,35 @@ path = os.path.dirname(os.path.abspath(filename))
 sys.path.append(os.path.join(path, '..'))
 
 from Basilisk.architecture import bskLogging
-from Basilisk.utilities import SimulationBaseClass, macros # general support file with common unit test functions
+from Basilisk.utilities import SimulationBaseClass, macros
 from Basilisk.simulation import simSynch, spacecraft, extForceTorque
 from bsk_module.rosBridgeHandler import RosBridgeHandler
-from Basilisk.architecture import messaging
-import numpy as np
-from Basilisk.architecture import sysModel
-
-def test_RosBridgeHandlerAllTest(function):
-    """rosHandlerModule Unit Test"""
-    [testResults, testMessage] = eval(function + '()')
-    assert testResults < 1, testMessage
     
-def test_RosBridgeHandler(test_rate=0.01, sim_time=300., namespace="test_sat1"):
+def run(sim_rate=0.01, sim_time=300., namespace="test_sat1"):
     """
     rosHandlerModule Unit Test
     
     Args:
-        test_rate (float): Simulation update rate in seconds
+        sim_rate (float): Simulation update rate in seconds
         sim_time (float): Total simulation time in seconds  
         namespace (str): Spacecraft namespace for the bridge handler
     """
-    __tracebackhide__ = True
     
-    scSimName = "unitTask"
-    unitProcessName = "TestProcess"
+    simTaskName = "simTask"
+    simProcessName = "simProcess"
+
+    # Create test thread
+    processRate = macros.sec2nano(sim_rate)
+    process = scSim.CreateNewProcess(simProcessName)
+    process.addTask(scSim.CreateNewTask(simTaskName, processRate))
 
     # Create a sim rosHandlerModule as an empty container
     scSim = SimulationBaseClass.SimBaseClass()
 
-    # Create test thread
-    testProcessRate = macros.sec2nano(test_rate)
-    testProc = scSim.CreateNewProcess(unitProcessName)
-    testProc.addTask(scSim.CreateNewTask(scSimName, testProcessRate))
-
     # runRealtime setting
     clockSync = simSynch.ClockSynch()
     clockSync.accelFactor = 1.0
-    scSim.AddModelToTask(scSimName, clockSync)
+    scSim.AddModelToTask(simTaskName, clockSync)
 
     # Create spacecraft dynamics (free-flying in space, no gravity)
     scObject = spacecraft.Spacecraft()
@@ -69,36 +59,33 @@ def test_RosBridgeHandler(test_rate=0.01, sim_time=300., namespace="test_sat1"):
     rosHandlerModule.ModelTag = "ros_bridge_handler"
     rosHandlerModule.bskLogger = bskLogging.BSKLogger(bskLogging.BSK_DEBUG)
 
-    # Add message readers/writers only if the types were discovered
-    scstate_reader = rosHandlerModule.add_bsk_msg_reader('SCStatesMsgPayload', 'scStateInMsg', 'sc_states')
-    force_reader = rosHandlerModule.add_bsk_msg_reader('CmdForceBodyMsgPayload', 'cmdForceBodyInMsg', 'cmd_force_body')
-    torque_reader = rosHandlerModule.add_bsk_msg_reader('CmdTorqueBodyMsgPayload', 'cmdTorqueBodyInMsg', 'cmd_torque_body')
-    
-    # Add writers for command topics (receiving commands from ROS2)
-    force_writer = rosHandlerModule.add_bsk_msg_writer('CmdForceBodyMsgPayload', 'cmdForceBodyOutMsg', 'cmd_force_body')
-    torque_writer = rosHandlerModule.add_bsk_msg_writer('CmdTorqueBodyMsgPayload', 'cmdTorqueBodyOutMsg', 'cmd_torque_body')
+    # Add message readers/writers (Msg type, direction, handler name, topic name)
+    rosHandlerModule.add_bsk_msg_handler('SCStatesMsgPayload', 'out', 'scStateInMsg', 'sc_states')
+    rosHandlerModule.add_bsk_msg_handler('CmdForceBodyMsgPayload', 'out', 'cmdForceBodyInMsg', 'cmd_force_body')
+    rosHandlerModule.add_bsk_msg_handler('CmdTorqueBodyMsgPayload', 'out', 'cmdTorqueBodyInMsg', 'cmd_torque_body')
+    rosHandlerModule.add_bsk_msg_handler('CmdForceBodyMsgPayload', 'in', 'cmdForceBodyOutMsg', 'cmd_force_body')
+    rosHandlerModule.add_bsk_msg_handler('CmdTorqueBodyMsgPayload', 'in', 'cmdTorqueBodyOutMsg', 'cmd_torque_body')
 
-    # Create external force and torque rosHandlerModule to apply ROS commands
+    # Connect BSK messages to ROS bridge handler
+    rosHandlerModule.scStateInMsg.subscribeTo(scObject.scStateOutMsg)
+    rosHandlerModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
+    rosHandlerModule.cmdTorqueBodyInMsg.subscribeTo(rosHandlerModule.cmdTorqueBodyOutMsg)
+
+    # Create external force and torque module
     extForceTorqueModule = extForceTorque.ExtForceTorque()
     extForceTorqueModule.ModelTag = "externalDisturbance"
     extForceTorqueModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
     scObject.addDynamicEffector(extForceTorqueModule)
 
     # Add spacecraft and rosHandlerModule to the simulation task
-    scSim.AddModelToTask(scSimName, rosHandlerModule, 10)
-    scSim.AddModelToTask(scSimName, extForceTorqueModule, 1)
-    scSim.AddModelToTask(scSimName, scObject, 0)
-    
-    # Connect spacecraft state output to bridge handler input
-    rosHandlerModule.scStateInMsg.subscribeTo(scObject.scStateOutMsg)
-    rosHandlerModule.cmdForceBodyInMsg.subscribeTo(rosHandlerModule.cmdForceBodyOutMsg)
-    rosHandlerModule.cmdTorqueBodyInMsg.subscribeTo(rosHandlerModule.cmdTorqueBodyOutMsg)
+    scSim.AddModelToTask(simTaskName, rosHandlerModule, 10)
+    scSim.AddModelToTask(simTaskName, extForceTorqueModule, 5)
+    scSim.AddModelToTask(simTaskName, scObject, 0)
 
     # Start simulation
     print(f"Initializing Basilisk simulation for namespace '{namespace}'...")
     scSim.InitializeSimulation()
 
-    print(f"Running simulation for {sim_time}s at {1/test_rate:.1f} Hz...")
     scSim.ConfigureStopTime(macros.sec2nano(sim_time))
     scSim.ExecuteSimulation()
     
@@ -122,15 +109,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     print(f"Starting Basilisk ROS Bridge Handler test with:")
-    print(f"  Namespace: {args.namespace}")
-    print(f"  Update rate: {args.rate:.6f}s ({1/args.rate:.1f} Hz)")
-    print(f"  Simulation time: {args.time}s")
+    print(f"  Simulation time: {args.time} s")
+    print(f"  Update rate: {1/args.rate:.1f} Hz")
     print(f"  BSK messages will be automatically published to /{args.namespace}/bsk/out/")
     print(f"  BSK commands will be automatically subscribed from /{args.namespace}/bsk/in/")
     print("")
     
-    test_RosBridgeHandler(
-        test_rate=args.rate,
+    run(
+        sim_rate=args.rate,
         sim_time=args.time,
         namespace=args.namespace
     )
