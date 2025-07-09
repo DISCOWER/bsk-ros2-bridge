@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from bsk_msgs.msg import CmdForceBodyMsgPayload, CmdTorqueBodyMsgPayload, SCStatesMsgPayload
+from bsk_msgs.msg import CmdForceBodyMsgPayload, CmdTorqueBodyMsgPayload, SCStatesMsgPayload, THRArrayCmdForceMsgPayload
 from std_msgs.msg import Float64
 import numpy as np
 
@@ -8,12 +8,16 @@ class BasiliskDataProcessor(Node):
     def __init__(self):
         super().__init__("bsk_data_processor")
         
+        # Declare ROS2 parameter for thruster mode
+        self.declare_parameter('useThrusters', False)
+        self.use_thrusters = self.get_parameter('useThrusters').get_parameter_value().bool_value
+        
         # Get namespace from node (can be set via ros2 run --ros-args -r __ns:=/namespace)
-        self.namespace = self.get_namespace()
-        if self.namespace == '/':
-            self.namespace = '/test_sat1'  # Default namespace if none provided
+        self.declare_parameter('namespace', '/test_sat1')
+        self.namespace = self.get_parameter('namespace').get_parameter_value().string_value
         
         self.get_logger().info(f"Starting BasiliskDataProcessor for namespace: {self.namespace}")
+        self.get_logger().info(f"Thruster mode: {self.use_thrusters}")
         
         # Track simulation time
         self.sim_time = 0.0
@@ -36,17 +40,25 @@ class BasiliskDataProcessor(Node):
         self.get_logger().info(f"Subscribed to: {self.namespace}/bsk/out/sc_states")
         
         # Publishers - Send commands to Basilisk input topics
-        self.force_pub = self.create_publisher(
-            CmdForceBodyMsgPayload, 
-            f"{self.namespace}/bsk/in/cmd_force_body", 
-            10
-        )
+        if self.use_thrusters:
+            self.force_pub = self.create_publisher(
+                THRArrayCmdForceMsgPayload, 
+                f"{self.namespace}/bsk/in/cmd_force_body", 
+                10
+            )
+        else:
+            self.force_pub = self.create_publisher(
+                CmdForceBodyMsgPayload, 
+                f"{self.namespace}/bsk/in/cmd_force_body", 
+                10
+            )
+        
         self.torque_pub = self.create_publisher(
             CmdTorqueBodyMsgPayload,
             f"{self.namespace}/bsk/in/cmd_torque_body",
             10
         )
-        timer_cmd_period = 0.1  # seconds
+        timer_cmd_period = 1.0  # seconds
         self.create_timer(timer_cmd_period, self.cmd_callback)
         self.get_logger().info(f"Publishing to: {self.namespace}/bsk/in/cmd_force_body and {self.namespace}/bsk/in/cmd_torque_body")
 
@@ -62,17 +74,32 @@ class BasiliskDataProcessor(Node):
         att = msg.sigma_bn
         omega = msg.omega_bn_b
 
-    def cmd_callback(self):        
-        # Create a CmdForceBodyMsgPayload message
-        force_msg = CmdForceBodyMsgPayload()
-        # Use simulation time for timestamp synchronization
-        force_msg.stamp.sec = int(self.sim_time)
-        force_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
-        
-        # Set dummy force values (Newtons) - replace with actual control law
-        force_msg.forcerequestbody[0] = np.random.uniform(-10.0, 10.0)
-        force_msg.forcerequestbody[1] = np.random.uniform(-10.0, 10.0)
-        force_msg.forcerequestbody[2] = np.random.uniform(-10.0, 10.0)
+    def cmd_callback(self):
+        if self.use_thrusters:
+            # Create a THRArrayCmdForceMsgPayload message for 12 thrusters
+            force_msg = THRArrayCmdForceMsgPayload()
+            # Use simulation time for timestamp synchronization
+            force_msg.stamp.sec = int(self.sim_time)
+            force_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
+            
+            # Set thruster force values (0-1.5 N for each of 12 thrusters)
+            for i in range(12):
+                force_msg.thrforce[i] = np.random.uniform(0.0, 1.5)
+            # force_msg.thrforce[0] = 0.75
+            # force_msg.thrforce[2] = 0.75
+            # force_msg.thrforce[3] = 0*0.25
+
+        else:
+            # Create a CmdForceBodyMsgPayload message
+            force_msg = CmdForceBodyMsgPayload()
+            # Use simulation time for timestamp synchronization
+            force_msg.stamp.sec = int(self.sim_time)
+            force_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
+            
+            # Set dummy force values (Newtons) - replace with actual control law
+            force_msg.forcerequestbody[0] = np.random.uniform(-10.0, 10.0)
+            force_msg.forcerequestbody[1] = np.random.uniform(-10.0, 10.0)
+            force_msg.forcerequestbody[2] = np.random.uniform(-10.0, 10.0)
         
         # Create a CmdTorqueBodyMsgPayload message
         torque_msg = CmdTorqueBodyMsgPayload()
@@ -81,19 +108,26 @@ class BasiliskDataProcessor(Node):
         torque_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
 
         # Set dummy torque values (Newton-meters) - replace with actual control law
-        torque_msg.torquerequestbody[0] = np.random.uniform(-1.0, 1.0)
-        torque_msg.torquerequestbody[1] = np.random.uniform(-1.0, 1.0)
-        torque_msg.torquerequestbody[2] = np.random.uniform(-1.0, 1.0)
+        torque_msg.torquerequestbody[0] = 0*np.random.uniform(-1.0, 1.0)
+        torque_msg.torquerequestbody[1] = 0*np.random.uniform(-1.0, 1.0)
+        torque_msg.torquerequestbody[2] = 0*np.random.uniform(-1.0, 1.0)
         
         # Publish the messages
         self.force_pub.publish(force_msg)
         self.torque_pub.publish(torque_msg)
         
         # Log sent commands
-        self.get_logger().info(
-            f"Sent commands: F=[{force_msg.forcerequestbody[0]:.2f}, {force_msg.forcerequestbody[1]:.2f}, {force_msg.forcerequestbody[2]:.2f}] N, "
-            f"T=[{torque_msg.torquerequestbody[0]:.2f}, {torque_msg.torquerequestbody[1]:.2f}, {torque_msg.torquerequestbody[2]:.2f}] Nm"
-        )
+        if self.use_thrusters:
+            thruster_forces = [f"{force_msg.thrforce[i]:.2f}" for i in range(12)]
+            self.get_logger().info(
+                f"Sent thruster commands: T=[{', '.join(thruster_forces)}] N, "
+                f"Torque=[{torque_msg.torquerequestbody[0]:.2f}, {torque_msg.torquerequestbody[1]:.2f}, {torque_msg.torquerequestbody[2]:.2f}] Nm"
+            )
+        else:
+            self.get_logger().info(
+                f"Sent commands: F=[{force_msg.forcerequestbody[0]:.2f}, {force_msg.forcerequestbody[1]:.2f}, {force_msg.forcerequestbody[2]:.2f}] N, "
+                f"T=[{torque_msg.torquerequestbody[0]:.2f}, {torque_msg.torquerequestbody[1]:.2f}, {torque_msg.torquerequestbody[2]:.2f}] Nm"
+            )
 
 def main():
     rclpy.init()

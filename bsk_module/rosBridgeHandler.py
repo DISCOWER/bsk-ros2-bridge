@@ -21,7 +21,7 @@ import pkgutil
 # =============================================================================
 # GLOBAL STATE AND OPTIMIZATIONS
 # =============================================================================
-# Shared ZMQ resources for multi-spacecraft scenarios - avoids port conflicts
+# Shared ZMQ resources for multi-spacecraft scenarios
 _shared_context = None
 _shared_sockets = {}
 
@@ -66,7 +66,7 @@ class RosBridgeHandler(sysModel.SysModel):
     _bsk_attrs_cache = {}
 
     def __init__(self, namespace="spacecraft1", send_port=5550, receive_port=5551, 
-                 heartbeat_port=5552, timeout=15):
+                 heartbeat_port=5552):
         """
         Initialize ROS Bridge Handler.
 
@@ -75,13 +75,11 @@ class RosBridgeHandler(sysModel.SysModel):
             send_port (int): ZMQ port for sending data to bridge (BSK -> ROS2)
             receive_port (int): ZMQ port for receiving data from bridge (ROS2 -> BSK)
             heartbeat_port (int): ZMQ port for heartbeat monitoring
-            timeout (int): Timeout in seconds for various operations
         """
         super(RosBridgeHandler, self).__init__()
 
         # Configuration
         self.namespace = namespace
-        self.timeout = timeout
         self.send_port = send_port
         self.receive_port = receive_port
         self.heartbeat_port = heartbeat_port
@@ -223,13 +221,8 @@ class RosBridgeHandler(sysModel.SysModel):
     def _wait_for_bridge_connection(self):
         """Block until bridge heartbeat detected - ensures bridge is ready."""
         print(f"[{self.namespace}] Waiting for bridge heartbeat...")
-        start_time = time.time()
         
         while self.last_heartbeat_time is None:
-            if time.time() - start_time > self.timeout:
-                error_msg = f"Timeout waiting for bridge heartbeat after {self.timeout}s"
-                print(f"ERROR: {error_msg}")
-                raise TimeoutError(error_msg)
             time.sleep(0.01)
             
         print(f"[{self.namespace}] Bridge heartbeat detected. Module ready.")
