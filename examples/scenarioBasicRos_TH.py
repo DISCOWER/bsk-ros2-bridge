@@ -17,7 +17,7 @@ path = os.path.dirname(os.path.abspath(filename))
 sys.path.append(os.path.join(path, '..'))
 from bsk_module.rosBridgeHandler import RosBridgeHandler
 
-def run(liveStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
+def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
     simTaskName = "simTask"
     simProcessName = "simProcess"
 
@@ -136,6 +136,7 @@ def run(liveStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTime
                                                   thrEffectorList=thrusterSet,
                                                   thrColors=vizSupport.toRGBA255("white"),
                                                   liveStream=liveStream,
+                                                  broadcastStream=broadcastStream,
                                                   )
         vizSupport.setActuatorGuiSetting(viz, showThrusterLabels=True)
 
@@ -152,7 +153,8 @@ def run(liveStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTime
 
 if __name__ == "__main__":
     run(
-        liveStream=True,
+        liveStream=False,
+        broadcastStream=True,
         simTimeStep=1/24.0,
         simTime=3600.0,
         accelFactor=1.0,
