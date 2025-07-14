@@ -43,7 +43,7 @@ class BasiliskDataProcessor(Node):
         if self.use_thrusters:
             self.force_pub = self.create_publisher(
                 THRArrayCmdForceMsgPayload, 
-                f"{self.namespace}/bsk/in/cmd_force_body", 
+                f"{self.namespace}/bsk/in/thr_array_cmd_force", 
                 10
             )
         else:
@@ -52,15 +52,14 @@ class BasiliskDataProcessor(Node):
                 f"{self.namespace}/bsk/in/cmd_force_body", 
                 10
             )
-        
-        self.torque_pub = self.create_publisher(
-            CmdTorqueBodyMsgPayload,
-            f"{self.namespace}/bsk/in/cmd_torque_body",
-            10
-        )
-        timer_cmd_period = 1.0  # seconds
+            self.torque_pub = self.create_publisher(
+                CmdTorqueBodyMsgPayload,
+                f"{self.namespace}/bsk/in/cmd_torque_body",
+                10
+            )
+
+        timer_cmd_period = 0.1  # seconds
         self.create_timer(timer_cmd_period, self.cmd_callback)
-        self.get_logger().info(f"Publishing to: {self.namespace}/bsk/in/cmd_force_body and {self.namespace}/bsk/in/cmd_torque_body")
 
     def sim_time_callback(self, msg: Float64):
         """Update simulation time from Basilisk."""
@@ -89,6 +88,15 @@ class BasiliskDataProcessor(Node):
             # force_msg.thrforce[2] = 0.75
             # force_msg.thrforce[3] = 0*0.25
 
+            # Publish the messages
+            self.force_pub.publish(force_msg)
+
+            thruster_forces = [f"{force_msg.thrforce[i]:.2f}" for i in range(12)]
+            self.get_logger().info(
+                f"Sent thruster commands:"
+                f"F=[{', '.join(thruster_forces)}] N"
+            )
+
         else:
             # Create a CmdForceBodyMsgPayload message
             force_msg = CmdForceBodyMsgPayload()
@@ -97,35 +105,28 @@ class BasiliskDataProcessor(Node):
             force_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
             
             # Set dummy force values (Newtons) - replace with actual control law
-            force_msg.forcerequestbody[0] = np.random.uniform(-10.0, 10.0)
-            force_msg.forcerequestbody[1] = np.random.uniform(-10.0, 10.0)
-            force_msg.forcerequestbody[2] = np.random.uniform(-10.0, 10.0)
+            force_msg.forcerequestbody[0] = 1*np.random.uniform(-3.0, 3.0)
+            force_msg.forcerequestbody[1] = 1*np.random.uniform(-3.0, 3.0)
+            force_msg.forcerequestbody[2] = 1*np.random.uniform(-3.0, 3.0)
         
-        # Create a CmdTorqueBodyMsgPayload message
-        torque_msg = CmdTorqueBodyMsgPayload()
-        # Use simulation time for timestamp synchronization
-        torque_msg.stamp.sec = int(self.sim_time)
-        torque_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
+            # Create a CmdTorqueBodyMsgPayload message
+            torque_msg = CmdTorqueBodyMsgPayload()
+            # Use simulation time for timestamp synchronization
+            torque_msg.stamp.sec = int(self.sim_time)
+            torque_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
 
-        # Set dummy torque values (Newton-meters) - replace with actual control law
-        torque_msg.torquerequestbody[0] = 0*np.random.uniform(-1.0, 1.0)
-        torque_msg.torquerequestbody[1] = 0*np.random.uniform(-1.0, 1.0)
-        torque_msg.torquerequestbody[2] = 0*np.random.uniform(-1.0, 1.0)
+            # Set dummy torque values (Newton-meters) - replace with actual control law
+            torque_msg.torquerequestbody[0] = 0*np.random.uniform(-0.3, 0.3)
+            torque_msg.torquerequestbody[1] = 0*np.random.uniform(-0.3, 0.3)
+            torque_msg.torquerequestbody[2] = 0*np.random.uniform(-0.3, 0.3)
+            
+            # Publish the messages
+            self.force_pub.publish(force_msg)
+            self.torque_pub.publish(torque_msg)
         
-        # Publish the messages
-        self.force_pub.publish(force_msg)
-        self.torque_pub.publish(torque_msg)
-        
-        # Log sent commands
-        if self.use_thrusters:
-            thruster_forces = [f"{force_msg.thrforce[i]:.2f}" for i in range(12)]
             self.get_logger().info(
-                f"Sent thruster commands: T=[{', '.join(thruster_forces)}] N, "
-                f"Torque=[{torque_msg.torquerequestbody[0]:.2f}, {torque_msg.torquerequestbody[1]:.2f}, {torque_msg.torquerequestbody[2]:.2f}] Nm"
-            )
-        else:
-            self.get_logger().info(
-                f"Sent commands: F=[{force_msg.forcerequestbody[0]:.2f}, {force_msg.forcerequestbody[1]:.2f}, {force_msg.forcerequestbody[2]:.2f}] N, "
+                f"Sent commands:"
+                f"F=[{force_msg.forcerequestbody[0]:.2f}, {force_msg.forcerequestbody[1]:.2f}, {force_msg.forcerequestbody[2]:.2f}] N"
                 f"T=[{torque_msg.torquerequestbody[0]:.2f}, {torque_msg.torquerequestbody[1]:.2f}, {torque_msg.torquerequestbody[2]:.2f}] Nm"
             )
 

@@ -26,7 +26,6 @@ _shared_context = None
 _shared_sockets = {}
 
 # Pre-compiled regex for better performance
-CAMEL_TO_SNAKE_RE = re.compile(r'(?<!^)(?=[A-Z])')
 NORMALIZE_FIELD_RE = re.compile(r'_')
 
 # =============================================================================
@@ -62,7 +61,6 @@ class RosBridgeHandler(sysModel.SysModel):
     
     # Performance caches - shared across instances
     _field_mapping_cache = {}
-    _topic_name_cache = {}
     _bsk_attrs_cache = {}
 
     def __init__(self, namespace="spacecraft1", send_port=5550, receive_port=5551, 
@@ -87,7 +85,6 @@ class RosBridgeHandler(sysModel.SysModel):
         # Dynamic message management
         self.input_msg_readers = {}    # BSK -> ROS2 publishers
         self.output_msg_writers = {}   # ROS2 -> BSK subscribers
-        self.last_msg_data = {}        # Cache for debugging/monitoring
         
         # Topic handshaking - ensures ROS2 topics are ready
         self.pending_topics = {}
@@ -127,7 +124,7 @@ class RosBridgeHandler(sysModel.SysModel):
         self.bsk_msg_types = {}
 
         try:
-            for finder, modname, ispkg in list(pkgutil.walk_packages(messaging_pkg.__path__, messaging_pkg.__name__ + ".")):
+            for _, modname, _ in list(pkgutil.walk_packages(messaging_pkg.__path__, messaging_pkg.__name__ + ".")):
                 try:
                     mod = importlib.import_module(modname)
                     for name, obj in inspect.getmembers(mod, inspect.isclass):
@@ -242,8 +239,6 @@ class RosBridgeHandler(sysModel.SysModel):
         if direction not in ["in", "out"]:
             self._log_error(f"Invalid direction '{direction}'. Must be 'in' or 'out'")
             return
-            
-        topic_name = topic_name or self._msg_type_to_topic_name(msg_type_name)
         
         # Generate default names based on direction
         if direction == "out":
@@ -277,6 +272,16 @@ class RosBridgeHandler(sysModel.SysModel):
         # Make handler accessible as attribute
         setattr(self, handler_name, handler)
         
+        # For "in" direction (ROS2 -> BSK), initialize with zero message to prevent read errors
+        if direction == "in":
+            zero_msg = self._create_zero_message(msg_type_name)
+            if zero_msg is not None:
+                try:
+                    handler.write(zero_msg, 0, 0)  # Write at time 0 with moduleID 0
+                    self._log_info(f"Initialized {handler_name} with zero message to prevent read errors")
+                except Exception as e:
+                    self._log_warning(f"Failed to initialize {handler_name} with zero message: {e}")
+        
         # Send topic request to bridge
         self._send_topic_request(msg_type_name, topic_name, direction)
         
@@ -308,7 +313,6 @@ class RosBridgeHandler(sysModel.SysModel):
         
         try:
             self.send_socket.send(json_dumps(self._topic_request_template), flags=zmq.NOBLOCK)
-            action = "subscription" if direction == "in" else "publisher"
         except Exception as e:
             self._log_error(f"Error sending topic request: {e}")
 
@@ -354,21 +358,35 @@ class RosBridgeHandler(sysModel.SysModel):
     # MESSAGE CONVERSION
     # =========================================================================
 
-    def _msg_type_to_topic_name(self, msg_type_name):
-        """
-        Convert BSK message type name to snake_case topic name.
-        E.g. 'SCStatesMsgPayload' -> 'sc_states'
-        E.g. 'THRArrayCmdForceMsgPayload' -> 'thr_array_cmd_force'
-        """
-        if msg_type_name in self._topic_name_cache:
-            return self._topic_name_cache[msg_type_name]
+    def _create_zero_message(self, msg_type_name):
+        """Create a BSK message with zero/default values to prevent read errors."""
+        try:
+            msg_payload = self.bsk_msg_types[msg_type_name]()
             
-        # Remove 'MsgPayload' suffix if present
-        name = msg_type_name[:-10] if msg_type_name.endswith('MsgPayload') else msg_type_name
-        topic_name = CAMEL_TO_SNAKE_RE.sub('_', name).lower()
-        
-        self._topic_name_cache[msg_type_name] = topic_name
-        return topic_name
+            # Initialize numeric arrays and scalars to zero
+            for attr_name in dir(msg_payload):
+                if (not attr_name.startswith('_') and attr_name not in {'this', 'thisown'} 
+                    and not callable(getattr(msg_payload, attr_name, None))):
+                    try:
+                        attr_value = getattr(msg_payload, attr_name)
+                        if isinstance(attr_value, np.ndarray):
+                            # Zero out numpy arrays
+                            setattr(msg_payload, attr_name, np.zeros_like(attr_value))
+                        elif isinstance(attr_value, (int, float)):
+                            # Zero out numeric scalars
+                            setattr(msg_payload, attr_name, 0.0 if isinstance(attr_value, float) else 0)
+                        elif isinstance(attr_value, (list, tuple)) and len(attr_value) > 0:
+                            # Zero out numeric lists/tuples
+                            if isinstance(attr_value[0], (int, float)):
+                                zero_list = [0.0 if isinstance(x, float) else 0 for x in attr_value]
+                                setattr(msg_payload, attr_name, zero_list)
+                    except Exception:
+                        continue
+            
+            return msg_payload
+        except Exception as e:
+            self._log_error(f"Failed to create zero message for {msg_type_name}: {e}")
+            return None
 
     def _bsk_msg_to_json(self, msg_payload, msg_type_name, CurrentSimNanos=None):
         """Convert BSK message payload to JSON dict with caching for better performance."""
@@ -519,8 +537,11 @@ class RosBridgeHandler(sysModel.SysModel):
         try:
             # Find topic name
             topic_name = next((info['topic_name'] for info in self.input_msg_readers.values() 
-                              if info['msg_type'] == msg_type_name), 
-                             self._msg_type_to_topic_name(msg_type_name))
+                              if info['msg_type'] == msg_type_name), None)
+            
+            if topic_name is None:
+                self._log_error(f"No topic_name found for message type {msg_type_name}")
+                return
 
             # Update timestamp if message supports it
             if hasattr(msg_payload, "stamp"):
@@ -581,7 +602,6 @@ class RosBridgeHandler(sysModel.SysModel):
                     # Convert JSON to BSK message and write
                     msg_payload = self._json_to_bsk_msg(command_data, msg_type_name)
                     writer_info['writer'].write(msg_payload, CurrentSimNanos, self.moduleID)
-                    self.last_msg_data[msg_type_name] = command_data
                     
         except zmq.Again:
             pass  # No more messages
@@ -596,26 +616,18 @@ class RosBridgeHandler(sysModel.SysModel):
         """Unified info logging."""
         if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_INFORMATION, message)
-        else:
-            print(f"[{self.namespace}] {message}")
 
     def _log_warning(self, message):
         """Unified warning logging."""
         if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_WARNING, message)
-        else:
-            print(f"[{self.namespace}] WARNING: {message}")
 
     def _log_error(self, message):
         """Unified error logging."""
         if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_ERROR, message)
-        else:
-            print(f"[{self.namespace}] ERROR: {message}")
 
     def _log_debug(self, message):
         """Unified debug logging."""
         if hasattr(self, 'bskLogger') and self.bskLogger:
             self.bskLogger.bskLog(sysModel.BSK_DEBUG, message)
-        else:
-            print(f"[{self.namespace}] DEBUG: {message}")
