@@ -1,49 +1,26 @@
 # Basilisk-ROS2 Bridge
 
-A ROS2 package that bridges the open-source astrodynamics simulator [Basilisk (BSK)](https://hanspeterschaub.info/basilisk/) with ROS2, enabling seamless communication between spacecraft simulation and ROS2-based control systems.
+A ROS2 package that bridges the [Basilisk astrodynamics simulator](https://hanspeterschaub.info/basilisk/) with ROS2, enabling real-time spacecraft simulation and control. Uses ZeroMQ for high-performance, low-latency communication.
 
-The bridge uses the [ZMQ Protocol](https://zguide.zeromq.org/docs/chapter2/#Handling-Errors-and-ETERM) for high-performance, low-latency communication, similar to Basilisk's Vizard visualization tool.
+## Components
 
-## Package Components
+- **Bridge Node** (`bsk_ros_bridge.py`) - ROS2 node that handles ZMQ<->ROS2 message conversion
+- **Handler Module** (`bsk_module/rosBridgeHandler.py`) - Basilisk module for scenario integration
+- **Example Scenarios** - Four example configurations demonstrating single/multi-spacecraft control
 
-This package contains three main components:
+## Quick Start
 
-1. **ROS2 Bridge Node** (`bsk_ros_bridge.py`) - **Main component** that handles ZMQ↔ROS2 message conversion and routing
-2. **Basilisk Module** (`rosBridgeHandler.py`) - Basilisk-side module for bridge communication  
-3. **Example Data Processor** (`ex_data_processor.py`) - Demonstrates ROS2-side spacecraft control (dummy controller)
-
-## Prerequisites
-
-### Required Dependencies
-
-**Custom ROS2 Messages:**
-This bridge requires custom ROS2 message definitions that mirror Basilisk's internal message structure. These messages are automatically converted from Basilisk's `.h` files to ROS2 `.msg` files, ensuring compatibility with Basilisk's internal data structures.
+### 1. Install Dependencies
 
 ```bash
+# Install custom ROS2 messages
 cd your_ros2_workspace/src
 git clone https://github.com/E-Krantz/bsk_msgs.git
 cd ..
 colcon build --packages-select bsk_msgs
 source install/setup.bash
-```
 
-### For Bridge and Data Processor
-Ensure you have ROS2 installed and sourced:
-```bash
-source /opt/ros/humble/setup.bash  # or your ROS2 distribution
-```
-
-### For Basilisk Module Only
-The Basilisk module requires Basilisk's Python environment:
-```bash
-cd $BSK_PATH  # replace with your Basilisk repository path
-source .venv/bin/activate
-```
-
-## Installation
-
-Clone the bridge to your ROS2 workspace and build:
-```bash
+# Install this package
 cd your_ros2_workspace/src
 git clone https://github.com/Thomas-Chan-2019/srl-ros2-BSK-bridge.git bsk_ros_bridge
 cd ..
@@ -51,110 +28,114 @@ colcon build --packages-select bsk_ros_bridge
 source install/setup.bash
 ```
 
-## Usage
+### 2. Run Example
 
-### Start the Bridge
-The bridge must be running before starting any Basilisk simulations:
 ```bash
+# Terminal 1: Start bridge
 ros2 launch bsk_ros_bridge bridge.launch.py
-```
 
-This creates the core communication infrastructure between Basilisk and ROS2.
+# Terminal 2: Start Basilisk simulation (requires BSK environment)
+source $BSK_PATH/.venv/bin/activate
+python examples/scenarioRosBasic_TH.py
+
+# Terminal 3: Start controller
+ros2 run bsk_ros_bridge ex_data_processor --ros-args -p mode:=direct_allocation
+```
 
 ## Examples
 
-### Single Spacecraft
+| Scenario | Type | Control Mode |
+|----------|------|--------------|
+| `scenarioRosBasic_TH.py` | Single spacecraft | Direct thruster allocation |
+| `scenarioRosBasic_wrench.py` | Single spacecraft | Force/torque commands |
+| `scenarioRosFormation_TH.py` | Multi-spacecraft | Direct thruster allocation |
+| `scenarioRosFormation_wrench.py` | Multi-spacecraft | Force/torque commands |
 
-**Terminal 1 - Start the bridge:**
-```bash
-ros2 launch bsk_ros_bridge bridge.launch.py
-```
+### Control Modes
 
-**Terminal 2 - Run Basilisk simulation (requires BSK environment):**
+**Direct Allocation (`direct_allocation`)**
+- Commands 12 individual thrusters (0-1.5N each)
+- Topic: `/[namespace]/bsk/in/thr_array_cmd_force`
+
+**Wrench Control (`wrench`)**
+- Commands 3D forces and torques, mapped to thrusters by Basilisk
+- Topics: `/[namespace]/bsk/in/cmd_force`, `/[namespace]/bsk/in/cmd_torque`
+
+### Multi-Spacecraft Usage
+
 ```bash
+# Start formation scenario
 source $BSK_PATH/.venv/bin/activate
-python examples/ex_ros_bridge_handler.py
+python examples/scenarioRosFormation_TH.py
+
+# Control each spacecraft separately
+ros2 run bsk_ros_bridge ex_data_processor --ros-args -p namespace:=/bskSat0 -p mode:=direct_allocation
+ros2 run bsk_ros_bridge ex_data_processor --ros-args -p namespace:=/bskSat1 -p mode:=direct_allocation
 ```
 
-**Terminal 3 - Run dummy controller:**
-```bash
-ros2 run bsk_ros_bridge example_data_processor
+## Development
+
+### Integrating RosBridgeHandler in Scenarios
+
+```python
+# Import and setup
+from bsk_module.rosBridgeHandler import RosBridgeHandler
+ros_bridge = RosBridgeHandler()
+ros_bridge.ModelTag = "ros_bridge"
+
+# Add publishers (Basilisk -> ROS2)
+ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat')
+
+# Add subscribers (ROS2 -> Basilisk)  
+ros_bridge.add_ros_subscriber('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgOut', 'thr_array_cmd_force', 'bskSat')
+
+# Connect to Basilisk messages
+ros_bridge.bskSat.SCStatesMsgIn.subscribeTo(scObject.scStateOutMsg)
+thrFiringSchmittObj.thrForceInMsg.subscribeTo(ros_bridge.bskSat.THRArrayCmdForceMsgOut)
+
+# Add to simulation task
+scSim.AddModelToTask(simTaskName, ros_bridge)
 ```
 
-### Multiple Spacecraft
+### Method Signatures
 
-**Terminal 1 - Start the bridge:**
-```bash
-ros2 launch bsk_ros_bridge bridge.launch.py
+```python
+# Publisher: Sends Basilisk data to ROS2
+ros_bridge.add_ros_publisher(msg_type_name, handler_name, topic_name, namespace)
+
+# Subscriber: Receives ROS2 commands in Basilisk
+ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace)
 ```
 
-**Terminal 2 - Run multi-spacecraft Basilisk simulation (requires BSK environment):**
-```bash
-source $BSK_PATH/.venv/bin/activate
-python examples/ex_ros_bridge_handler_multi.py
-```
+**Parameters:**
+- `msg_type_name` - Basilisk message type (e.g., `'SCStatesMsgPayload'`, `'CmdForceBodyMsgPayload'`)
+- `handler_name` - Internal message handler (e.g., `'SCStatesMsgIn'`, `'CmdForceBodyMsgOut'`)
+- `topic_name` - ROS2 topic name (e.g., `'sc_states'`, `'cmd_force'`)
+- `namespace` - Spacecraft identifier (e.g., `'bskSat'`, `'bskSat0'`)
 
-**Terminal 3 - Run dummy controller for test_sat1:**
-```bash
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/test_sat1
-```
+### Topic Structure
 
-**Terminal 4 - Run dummy controller for test_sat2:**
-```bash
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/test_sat2
-```
+Topics follow the pattern: `/[namespace]/bsk/[direction]/[topic_name]`
 
-**Terminal 5 - Run dummy controller for test_sat3:**
-```bash
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/test_sat3
-```
-
-The multi-spacecraft example (`ex_ros_bridge_handler_multi.py`) demonstrates different spacecraft operating at different frequencies:
-- **test_sat1**: 100 Hz (0.01s update rate)
-- **test_sat2**: 50 Hz (0.02s update rate)  
-- **test_sat3**: 200 Hz (0.005s update rate)
-
-All spacecraft share the same ZMQ ports (5550-5552) through the bridge, avoiding port conflicts while maintaining independent control loops.
-
-## Configuration
+**Common Topics:**
+- `/bsk_sim_time` - Simulation time sync
+- `/[namespace]/bsk/out/sc_states` - Spacecraft states  
+- `/[namespace]/bsk/in/thr_array_cmd_force` - Thruster commands
+- `/[namespace]/bsk/in/cmd_force` - Force commands
+- `/[namespace]/bsk/in/cmd_torque` - Torque commands
 
 ### Port Configuration
 
-**Default ZMQ Ports:**
-- **5550** - Basilisk → Bridge (simulation data)
-- **5551** - Bridge → Basilisk (control commands)  
-- **5552** - Bridge heartbeat (health monitoring)
+Default ZMQ ports: 5550 (Basilisk->Bridge), 5551 (Bridge->Basilisk), 5552 (heartbeat)
 
-**Changing Bridge Ports:**
+**Custom ports:**
 ```bash
-# Custom ports for the bridge
 ros2 launch bsk_ros_bridge bridge.launch.py sub_port:=6550 pub_port:=6551 heartbeat_port:=6552
 ```
 
-**Changing Basilisk Module Ports:**
-In your Basilisk script, configure the `RosBridgeHandler`:
 ```python
-# Default ports (5550, 5551, 5552)
-module = RosBridgeHandler(namespace="test_sat1")
-
-# Custom ports
-module = RosBridgeHandler(
-    namespace="test_sat1",
-    send_port=6550,      # Must match bridge sub_port
-    receive_port=6551,   # Must match bridge pub_port
-    heartbeat_port=6552  # Must match bridge heartbeat_port
-)
+ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=6552)
 ```
-
-### Topics
-
-**Published Topics (Basilisk → ROS2):**
-- `/[namespace]/bsk/out/sc_states` - Spacecraft state data
-- `/bsk_sim_time` - Simulation time synchronization
-
-**Subscribed Topics (ROS2 → Basilisk):**
-- `/[namespace]/bsk/in/cmd_force_body` - Control forces
-- `/[namespace]/bsk/in/cmd_torque_body` - Control torques
 
 ## Features
 
@@ -168,52 +149,13 @@ module = RosBridgeHandler(
 
 ## Troubleshooting
 
-### Missing Message Types
-If you encounter errors about missing message types:
-
-```bash
-# Ensure bsk_msgs is built and sourced
-cd your_ros2_workspace
-colcon build --packages-select bsk_msgs
-source install/setup.bash
-
-# Verify message types are available
-ros2 interface list | grep bsk_msgs
-```
-
-### Port Conflicts
-If you encounter ZMQ port conflicts:
-
-```bash
-# Check for occupied ports
-lsof -i :5550 :5551 :5552
-
-# Kill conflicting processes if needed
-kill -9 ${PID}  # Replace ${PID} with the actual process ID
-```
-
-### Bridge Connection Issues
-- Ensure the bridge is running before starting Basilisk
-- Check that Basilisk's virtual environment is activated
-- Verify port configuration matches between bridge and Basilisk module
-- Ensure `bsk_msgs` package is built and sourced
-- Monitor bridge logs for heartbeat and connection status
-
-## Contributing
-
-When contributing to this package:
-1. Follow ROS2 Python style guidelines
-2. Add corresponding conversion functions in the bridge for new message types
-3. Update `bsk_msgs` package if new Basilisk message types are needed
-4. Update tests and documentation
-
-## License
-
-This package is licensed under BSD-3-Clause.
+**Missing message types:** Ensure `bsk_msgs` is built and sourced
+**Port conflicts:** Check ports with `lsof -i :5550 :5551 :5552`  
+**Connection issues:** Ensure bridge is running, verify BSK environment is activated
 
 ## References
 
 - [Basilisk Astrodynamics Simulation](https://hanspeterschaub.info/basilisk/)
 - [ROS2 Documentation](https://www.ros.org/)
-- [ZeroMQ Messaging Library](https://zeromq.org/)
+- [ZeroMQ Documentation](https://zeromq.org/)
 - [BSK ROS2 Messages](https://github.com/E-Krantz/bsk_msgs.git)

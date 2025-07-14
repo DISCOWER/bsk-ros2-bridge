@@ -64,7 +64,7 @@ class RosBridgeHandler(sysModel.SysModel):
     _field_mapping_cache = {}
     _bsk_attrs_cache = {}
 
-    def __init__(self, namespace="spacecraft1", send_port=5550, receive_port=5551, 
+    def __init__(self, ModelTag="ros_bridge", send_port=5550, receive_port=5551, 
                  heartbeat_port=5552):
         """
         Initialize ROS Bridge Handler.
@@ -78,7 +78,7 @@ class RosBridgeHandler(sysModel.SysModel):
         super(RosBridgeHandler, self).__init__()
 
         # Configuration
-        self.namespace = namespace
+        self.ModelTag = ModelTag
         self.send_port = send_port
         self.receive_port = receive_port
         self.heartbeat_port = heartbeat_port
@@ -96,7 +96,7 @@ class RosBridgeHandler(sysModel.SysModel):
         # Pre-serialize for better performance
         self._topic_request_template = {
             "topic_request": True,
-            "namespace": self.namespace,
+            "namespace": "",
             "msg_type": "",
             "topic_name": "",
             "direction": "",  # "in" or "out"
@@ -138,9 +138,9 @@ class RosBridgeHandler(sysModel.SysModel):
                 except Exception:
                     continue
         except Exception as e:
-            print(f"[{self.namespace}] ERROR: Could not import Basilisk.architecture.messaging: {e}")
+            print(f"[{self.ModelTag}] ERROR: Could not import Basilisk.architecture.messaging: {e}")
 
-        print(f"[{self.namespace}] Discovered {len(self.bsk_msg_types)} BSK message types")
+        print(f"[{self.ModelTag}] Discovered {len(self.bsk_msg_types)} BSK message types")
 
     def _setup_zmq_communication(self):
         """Initialize ZMQ sockets with shared context for multi-spacecraft support."""
@@ -173,11 +173,11 @@ class RosBridgeHandler(sysModel.SysModel):
                     time.sleep(0.01)
                 except (zmq.ZMQError, zmq.ContextTerminated) as e:
                     if self._running and self._initialization_complete:
-                        print(f"[{self.namespace}] Heartbeat monitoring stopped: {e}")
+                        print(f"[{self.ModelTag}] Heartbeat monitoring stopped: {e}")
                     break
                 except Exception as e:
                     if self._initialization_complete and self._running:
-                        print(f"[{self.namespace}] Heartbeat monitoring error: {e}")
+                        print(f"[{self.ModelTag}] Heartbeat monitoring error: {e}")
                     time.sleep(0.1)
         
         self.heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
@@ -198,12 +198,12 @@ class RosBridgeHandler(sysModel.SysModel):
             try:
                 self.send_socket.bind(f"tcp://*:{self.send_port}")
                 _shared_sockets[socket_key] = self.send_socket
-                print(f"[{self.namespace}] Created and bound shared publisher on port {self.send_port}")
+                print(f"[{self.ModelTag}] Created and bound shared publisher on port {self.send_port}")
             except zmq.ZMQError as e:
                 raise RuntimeError(f"Failed to bind to port {self.send_port}: {e}")
         else:
             self.send_socket = _shared_sockets[socket_key]
-            print(f"[{self.namespace}] Using shared publisher on port {self.send_port}")
+            print(f"[{self.ModelTag}] Using shared publisher on port {self.send_port}")
 
     def _setup_command_subscriber(self):
         """Setup ZMQ subscriber for ROS2 -> BSK commands."""
@@ -216,12 +216,12 @@ class RosBridgeHandler(sysModel.SysModel):
 
     def _wait_for_bridge_connection(self):
         """Block until bridge heartbeat detected - ensures bridge is ready."""
-        print(f"[{self.namespace}] Waiting for bridge heartbeat...")
+        print(f"[{self.ModelTag}] Waiting for bridge heartbeat...")
         
         while self.last_heartbeat_time is None:
             time.sleep(0.01)
             
-        print(f"[{self.namespace}] Bridge heartbeat detected. Module ready.")
+        print(f"[{self.ModelTag}] Bridge heartbeat detected. Module ready.")
 
     # =========================================================================
     # SET UP MESSAGE HANDLING
@@ -334,13 +334,12 @@ class RosBridgeHandler(sysModel.SysModel):
     # TOPIC REQUEST MANAGEMENT
     # =========================================================================
 
-    def _send_topic_request(self, msg_type_name, topic_name, direction, namespace=None):
+    def _send_topic_request(self, msg_type_name, topic_name, direction, namespace):
         """Send topic request to bridge for automatic ROS2 topic creation."""
-        msg_namespace = namespace if namespace is not None else self.namespace
-        request_id = f"{msg_namespace}_{msg_type_name}_{topic_name}_{direction}"
+        request_id = f"{namespace}_{msg_type_name}_{topic_name}_{direction}"
         
         self._topic_request_template.update({
-            "namespace": msg_namespace,
+            "namespace": namespace,
             "msg_type": msg_type_name,
             "topic_name": topic_name,
             "direction": direction,
@@ -351,7 +350,7 @@ class RosBridgeHandler(sysModel.SysModel):
             "msg_type": msg_type_name,
             "topic_name": topic_name,
             "direction": direction,
-            "namespace": msg_namespace,
+            "namespace": namespace,
             "attempts": 0,
             "last_attempt": time.time()
         }
@@ -380,7 +379,7 @@ class RosBridgeHandler(sysModel.SysModel):
                     request_info["last_attempt"] = current_time
                     
                     self._topic_request_template.update({
-                        "namespace": request_info.get("namespace", self.namespace),
+                        "namespace": request_info.get("namespace", ""),
                         "msg_type": request_info["msg_type"],
                         "topic_name": request_info["topic_name"],
                         "direction": request_info["direction"],
@@ -391,13 +390,13 @@ class RosBridgeHandler(sysModel.SysModel):
                         self.send_socket.send(json_dumps(self._topic_request_template), flags=zmq.NOBLOCK)
                         if request_info['attempts'] > 1:
                             action = "subscription" if request_info["direction"] == "in" else "publisher"
-                            print(f"[{self.namespace}] Retrying {action} request {request_id} (attempt {request_info['attempts']}/{max_attempts})")
+                            print(f"[{self.ModelTag}] Retrying {action} request {request_id} (attempt {request_info['attempts']}/{max_attempts})")
                     except Exception as e:
                         print(f"ERROR: Failed to retry topic request {request_id}: {e}")
                 else:
                     # Max attempts reached
                     action = "subscription" if request_info["direction"] == "in" else "publisher"
-                    print(f"[{self.namespace}] WARNING: {action.capitalize()} request {request_id} failed after {max_attempts} attempts")
+                    print(f"[{self.ModelTag}] WARNING: {action.capitalize()} request {request_id} failed after {max_attempts} attempts")
                     del self.pending_topics[request_id]
 
     # =========================================================================
@@ -516,7 +515,7 @@ class RosBridgeHandler(sysModel.SysModel):
             if not reader_info['reader'].isLinked():
                 self._log_warning(f"Reader {reader_name} is not connected.")
             
-        self._log_info(f"Reset complete for RosBridgeHandler namespace: {self.namespace}")
+        self._log_info(f"Reset complete for RosBridgeHandler: {self.ModelTag}")
         return
 
     def UpdateState(self, CurrentSimNanos):
@@ -560,12 +559,12 @@ class RosBridgeHandler(sysModel.SysModel):
         now = time.time()
         if self.last_heartbeat_time is None or (now - self.last_heartbeat_time > 1.0):
             if not self._heartbeat_was_lost:
-                print(f"[{self.namespace}] No bridge heartbeat for >1s! Pausing UpdateState.")
+                print(f"[{self.ModelTag}] No bridge heartbeat for >1s! Pausing UpdateState.")
                 self._heartbeat_was_lost = True
             return False
         else:
             if self._heartbeat_was_lost:
-                print(f"[{self.namespace}] Bridge heartbeat restored. Resuming UpdateState.")
+                print(f"[{self.ModelTag}] Bridge heartbeat restored. Resuming UpdateState.")
                 self._heartbeat_was_lost = False
             return True
             
@@ -578,17 +577,15 @@ class RosBridgeHandler(sysModel.SysModel):
         except Exception as e:
             self._log_error(f"Error publishing sim_time: {e}")
 
-    def _publish_bsk_message(self, CurrentSimNanos, msg_payload, msg_type_name, namespace=None):
+    def _publish_bsk_message(self, CurrentSimNanos, msg_payload, msg_type_name, namespace):
         """Publish BSK message data to ROS2 via bridge."""
         try:
-            msg_namespace = namespace if namespace is not None else self.namespace
-            
             # Find topic name
             topic_name = next((info['topic_name'] for info in self.input_msg_readers.values() 
-                              if info['msg_type'] == msg_type_name and info.get('namespace') == msg_namespace), None)
+                              if info['msg_type'] == msg_type_name and info.get('namespace') == namespace), None)
             
             if topic_name is None:
-                self._log_error(f"No topic_name found for message type {msg_type_name} in namespace {msg_namespace}")
+                self._log_error(f"No topic_name found for message type {msg_type_name} in namespace {namespace}")
                 return
 
             # Update timestamp if message supports it
@@ -607,7 +604,7 @@ class RosBridgeHandler(sysModel.SysModel):
 
             json_data = self._bsk_msg_to_json(msg_payload, msg_type_name, CurrentSimNanos)
             msg = {
-                "namespace": msg_namespace,
+                "namespace": namespace,
                 "msg_type": msg_type_name,
                 "topic_name": topic_name,
                 "time": CurrentSimNanos * 1e-9,
@@ -627,12 +624,6 @@ class RosBridgeHandler(sysModel.SysModel):
                 msg_namespace = command_data.get('namespace')
                 if not msg_namespace:
                     continue
-
-                handled_namespaces = {self.namespace}
-                handled_namespaces.update(info.get('namespace', self.namespace) for info in self.output_msg_writers.values())
-                
-                if msg_namespace not in handled_namespaces:
-                    continue
                 
                 # Handle topic confirmations
                 if command_data.get('topic_confirmation', False):
@@ -641,7 +632,7 @@ class RosBridgeHandler(sysModel.SysModel):
                         self.confirmed_topics.add(request_id)
                         self._log_info(
                             f"Received topic confirmation for "
-                            f"/{command_data.get('namespace', 'unknown')}/bsk/{command_data.get('direction', '')}/{command_data.get('topic_name', '')}"
+                            f"/{command_data.get('namespace', '')}/bsk/{command_data.get('direction', '')}/{command_data.get('topic_name', '')}"
                         )
                     continue
                     
