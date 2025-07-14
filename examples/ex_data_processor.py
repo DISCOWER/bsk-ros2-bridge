@@ -12,7 +12,7 @@ class BasiliskDataProcessor(Node):
         self.declare_parameter('useThrusters', False)
         self.use_thrusters = self.get_parameter('useThrusters').get_parameter_value().bool_value
         
-        # Get namespace from node (can be set via ros2 run --ros-args -r __ns:=/namespace)
+        # Get namespace from parameter (can be set via ros2 run --ros-args -p namespace:=/bskSat0)
         self.declare_parameter('namespace', '/test_sat1')
         self.namespace = self.get_parameter('namespace').get_parameter_value().string_value
         

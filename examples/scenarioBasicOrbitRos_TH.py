@@ -170,18 +170,18 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         vizSupport.setActuatorGuiSetting(viz, showThrusterLabels=True)
         vizSupport.createCustomModel(viz
                                      , simBodiesToModify=[scObject.ModelTag]
-                                     , modelPath="/home/eliaskra/.gz/fuel/fuel.gazebosim.org/proque/models/atmos/1/meshes/atmos.glb"
+                                     , modelPath=os.path.expanduser("~/.gz/fuel/fuel.gazebosim.org/proque/models/atmos/1/meshes/atmos.glb")
                                      , offset=[0., 0., -0.2]
                                      , rotation=[0., 4.71238898038, 0.])
         vizSupport.createCustomModel(viz
                                      , simBodiesToModify=[scObject2.ModelTag]
-                                     , modelPath="/home/eliaskra/.gz/fuel/fuel.gazebosim.org/proque/models/atmos/1/meshes/atmos.glb"
+                                     , modelPath=os.path.expanduser("~/.gz/fuel/fuel.gazebosim.org/proque/models/atmos/1/meshes/atmos.glb")
                                      , offset=[0., 0., -0.2]
                                      , rotation=[0., 4.71238898038, 0.])
         
         vizSupport.createCustomModel(viz
                                      , simBodiesToModify=[scObject3.ModelTag]
-                                     , modelPath="/home/eliaskra/.gz/fuel/fuel.gazebosim.org/proque/models/atmos/1/meshes/atmos.glb"
+                                     , modelPath=os.path.expanduser("~/.gz/fuel/fuel.gazebosim.org/proque/models/atmos/1/meshes/atmos.glb")
                                      , offset=[0., 0., -0.2]
                                      , rotation=[0., 4.71238898038, 0.])
 

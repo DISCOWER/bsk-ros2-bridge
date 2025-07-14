@@ -12,6 +12,7 @@ import time
 import orjson  # Faster JSON processing than standard json
 import numpy as np
 import re
+import gc
 
 # Module discovery
 import inspect
@@ -159,6 +160,8 @@ class RosBridgeHandler(sysModel.SysModel):
         self.heartbeat_sub.connect(f"tcp://localhost:{self.heartbeat_port}")
         self.heartbeat_sub.setsockopt_string(zmq.SUBSCRIBE, "")
         self.heartbeat_sub.setsockopt(zmq.RCVTIMEO, 10)
+        self.heartbeat_sub.setsockopt(zmq.RCVHWM, 1)
+        self.heartbeat_sub.setsockopt(zmq.CONFLATE, 1)
 
         def heartbeat_monitor():
             """Background thread - monitors bridge health via heartbeat."""
@@ -190,6 +193,7 @@ class RosBridgeHandler(sysModel.SysModel):
             self.send_socket = self.context.socket(zmq.PUB)
             self.send_socket.setsockopt(zmq.LINGER, 0)
             self.send_socket.setsockopt(zmq.SNDHWM, 100)  # Prevent memory buildup
+            self.send_socket.setsockopt(zmq.IMMEDIATE, 1)
             
             try:
                 self.send_socket.bind(f"tcp://*:{self.send_port}")
@@ -208,6 +212,7 @@ class RosBridgeHandler(sysModel.SysModel):
         self.receive_socket.setsockopt_string(zmq.SUBSCRIBE, '')
         self.receive_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest
         self.receive_socket.setsockopt(zmq.RCVTIMEO, 1)   # Non-blocking
+        self.receive_socket.setsockopt(zmq.RCVHWM, 5)     # Limit to 5 messages
 
     def _wait_for_bridge_connection(self):
         """Block until bridge heartbeat detected - ensures bridge is ready."""
@@ -222,81 +227,120 @@ class RosBridgeHandler(sysModel.SysModel):
     # SET UP MESSAGE HANDLING
     # =========================================================================
 
-    def add_bsk_msg_handler(self, msg_type_name, direction, handler_name, topic_name):
+    def add_ros_publisher(self, msg_type_name, handler_name, topic_name, namespace):
         """
-        Add BSK message handler for automatic communication with ROS2.
+        Add BSK message handler for publishing data to ROS2 (BSK -> ROS2).
         
         Args:
             msg_type_name (str): BSK message type name (e.g., 'SCStatesMsgPayload')
-            direction (str): "out" for BSK -> ROS2 (readers), "in" for ROS2 -> BSK (writers)
-            handler_name (str): Name for the handler (e.g., 'scStateInMsg')
+            handler_name (str): Name for the handler (e.g., 'scStateReader')
             topic_name (str): Topic name (e.g., 'imu_1', 'imu_2')
+            namespace (str): Namespace for this specific handler (e.g., 'spacecraft_1')
+        """
+        if msg_type_name not in self.bsk_msg_types:
+            self._log_error(f"Unknown BSK message type: {msg_type_name}")
+            return        
+        # Create reader class
+        try:
+            handler_class_name = msg_type_name.replace('MsgPayload', 'MsgReader')
+            handler_class = getattr(messaging, handler_class_name)
+            handler = handler_class()
+        except AttributeError:
+            self._log_error(f"No msgreader found for message type: {msg_type_name} (tried {handler_class_name})")
+            return
+        
+        # Store handler configuration
+        unique_handler_key = f"{namespace}_{handler_name}"
+        self.input_msg_readers[unique_handler_key] = {
+            'reader': handler,
+            'msg_type': msg_type_name,
+            'topic_name': topic_name,
+            'namespace': namespace
+        }
+        
+        # Create namespace object if it doesn't exist
+        if not hasattr(self, namespace):
+            namespace_obj = type('NamespaceObject', (), {})()
+            setattr(self, namespace, namespace_obj)
+        
+        # Add handler to the namespace object only
+        setattr(getattr(self, namespace), handler_name, handler)
+        
+        # Send topic request to bridge
+        self._send_topic_request(msg_type_name, topic_name, "out", namespace)
+        
+        self._log_info(f"Added BSK handler: {handler_name} ({msg_type_name}) -> /{namespace}/bsk/out/{topic_name}")
+        return
+
+    def add_ros_subscriber(self, msg_type_name, handler_name, topic_name, namespace):
+        """
+        Add BSK message handler for subscribing to ROS2 data (ROS2 -> BSK).
+        
+        Args:
+            msg_type_name (str): BSK message type name (e.g., 'SCStatesMsgPayload')
+            handler_name (str): Name for the handler (e.g., 'scStateWriter')
+            topic_name (str): Topic name (e.g., 'imu_1', 'imu_2')
+            namespace (str): Namespace for this specific handler (e.g., 'spacecraft_1')
         """
         if msg_type_name not in self.bsk_msg_types:
             self._log_error(f"Unknown BSK message type: {msg_type_name}")
             return
-            
-        if direction not in ["in", "out"]:
-            self._log_error(f"Invalid direction '{direction}'. Must be 'in' or 'out'")
-            return
         
-        # Generate default names based on direction
-        if direction == "out":
-            handler_name = handler_name or f"{msg_type_name.lower()}_reader"
-            class_suffix = "MsgReader"
-            storage_dict = self.input_msg_readers
-            arrow = "->"
-        else:  # direction == "in"
-            handler_name = handler_name or f"{msg_type_name.lower()}_writer"
-            class_suffix = "Msg"
-            storage_dict = self.output_msg_writers
-            arrow = "<-"
+        # Generate default names
+        handler_name = handler_name or f"{msg_type_name.lower()}_writer"
         
-        # Create handler class
+        # Create writer class
         try:
-            handler_class_name = msg_type_name.replace('MsgPayload', class_suffix)
+            handler_class_name = msg_type_name.replace('MsgPayload', 'Msg')
             handler_class = getattr(messaging, handler_class_name)
             handler = handler_class()
         except AttributeError:
-            self._log_error(f"No {class_suffix.lower()} found for message type: {msg_type_name} (tried {handler_class_name})")
+            self._log_error(f"No msg found for message type: {msg_type_name} (tried {handler_class_name})")
             return
         
         # Store handler configuration
-        handler_key = "reader" if direction == "out" else "writer"
-        storage_dict[handler_name] = {
-            handler_key: handler,
+        unique_handler_key = f"{namespace}_{handler_name}"
+        self.output_msg_writers[unique_handler_key] = {
+            'writer': handler,
             'msg_type': msg_type_name,
-            'topic_name': topic_name
+            'topic_name': topic_name,
+            'namespace': namespace
         }
         
-        # Make handler accessible as attribute
-        setattr(self, handler_name, handler)
+        # Create namespace object if it doesn't exist
+        if not hasattr(self, namespace):
+            namespace_obj = type('NamespaceObject', (), {})()
+            setattr(self, namespace, namespace_obj)
         
-        # For "in" direction (ROS2 -> BSK), initialize with zero message to prevent read errors
-        if direction == "in":
-            zero_msg = self._create_zero_message(msg_type_name)
-            if zero_msg is not None:
-                try:
-                    handler.write(zero_msg, 0, 0)  # Write at time 0 with moduleID 0
-                    self._log_info(f"Initialized {handler_name} with zero message to prevent read errors")
-                except Exception as e:
-                    self._log_warning(f"Failed to initialize {handler_name} with zero message: {e}")
+        # Add handler to the namespace object only
+        setattr(getattr(self, namespace), handler_name, handler)
+        
+        # Initialize with zero message to prevent read errors
+        zero_msg = self._create_zero_message(msg_type_name)
+        if zero_msg is not None:
+            try:
+                handler.write(zero_msg, 0, 0)  # Write at time 0 with moduleID 0
+                self._log_info(f"Initialized {handler_name} with zero message to prevent read errors")
+            except Exception as e:
+                self._log_warning(f"Failed to initialize {handler_name} with zero message: {e}")
         
         # Send topic request to bridge
-        self._send_topic_request(msg_type_name, topic_name, direction)
+        self._send_topic_request(msg_type_name, topic_name, "in", namespace)
         
-        self._log_info(f"Added BSK message {handler_key}: {handler_name} ({msg_type_name}) {arrow} /{self.namespace}/bsk/{direction}/{topic_name}")
+        self._log_info(f"Added BSK message handler: {handler_name} ({msg_type_name}) <- /{namespace}/bsk/in/{topic_name}")
         return
 
     # =========================================================================
     # TOPIC REQUEST MANAGEMENT
     # =========================================================================
 
-    def _send_topic_request(self, msg_type_name, topic_name, direction):
+    def _send_topic_request(self, msg_type_name, topic_name, direction, namespace=None):
         """Send topic request to bridge for automatic ROS2 topic creation."""
-        request_id = f"{self.namespace}_{msg_type_name}_{topic_name}_{direction}"
+        msg_namespace = namespace if namespace is not None else self.namespace
+        request_id = f"{msg_namespace}_{msg_type_name}_{topic_name}_{direction}"
         
         self._topic_request_template.update({
+            "namespace": msg_namespace,
             "msg_type": msg_type_name,
             "topic_name": topic_name,
             "direction": direction,
@@ -307,6 +351,7 @@ class RosBridgeHandler(sysModel.SysModel):
             "msg_type": msg_type_name,
             "topic_name": topic_name,
             "direction": direction,
+            "namespace": msg_namespace,
             "attempts": 0,
             "last_attempt": time.time()
         }
@@ -335,6 +380,7 @@ class RosBridgeHandler(sysModel.SysModel):
                     request_info["last_attempt"] = current_time
                     
                     self._topic_request_template.update({
+                        "namespace": request_info.get("namespace", self.namespace),
                         "msg_type": request_info["msg_type"],
                         "topic_name": request_info["topic_name"],
                         "direction": request_info["direction"],
@@ -500,7 +546,7 @@ class RosBridgeHandler(sysModel.SysModel):
         for reader_name, reader_info in self.input_msg_readers.items():
             if reader_info['reader'].isLinked() and reader_info['reader'].isWritten():
                 msg_payload = reader_info['reader']()
-                self._publish_bsk_message(CurrentSimNanos, msg_payload, reader_info['msg_type'])
+                self._publish_bsk_message(CurrentSimNanos, msg_payload, reader_info['msg_type'], reader_info['namespace'])
 
         # Receive and process commands from ROS2
         self._receive_ros_message(CurrentSimNanos)
@@ -532,15 +578,17 @@ class RosBridgeHandler(sysModel.SysModel):
         except Exception as e:
             self._log_error(f"Error publishing sim_time: {e}")
 
-    def _publish_bsk_message(self, CurrentSimNanos, msg_payload, msg_type_name):
+    def _publish_bsk_message(self, CurrentSimNanos, msg_payload, msg_type_name, namespace=None):
         """Publish BSK message data to ROS2 via bridge."""
         try:
+            msg_namespace = namespace if namespace is not None else self.namespace
+            
             # Find topic name
             topic_name = next((info['topic_name'] for info in self.input_msg_readers.values() 
-                              if info['msg_type'] == msg_type_name), None)
+                              if info['msg_type'] == msg_type_name and info.get('namespace') == msg_namespace), None)
             
             if topic_name is None:
-                self._log_error(f"No topic_name found for message type {msg_type_name}")
+                self._log_error(f"No topic_name found for message type {msg_type_name} in namespace {msg_namespace}")
                 return
 
             # Update timestamp if message supports it
@@ -559,7 +607,7 @@ class RosBridgeHandler(sysModel.SysModel):
 
             json_data = self._bsk_msg_to_json(msg_payload, msg_type_name, CurrentSimNanos)
             msg = {
-                "namespace": self.namespace,
+                "namespace": msg_namespace,
                 "msg_type": msg_type_name,
                 "topic_name": topic_name,
                 "time": CurrentSimNanos * 1e-9,
@@ -576,8 +624,14 @@ class RosBridgeHandler(sysModel.SysModel):
             while True:
                 command_data = json_loads(self.receive_socket.recv(flags=zmq.NOBLOCK))
                 
-                # Check if this message is for our namespace
-                if command_data.get('namespace') != self.namespace:
+                msg_namespace = command_data.get('namespace')
+                if not msg_namespace:
+                    continue
+
+                handled_namespaces = {self.namespace}
+                handled_namespaces.update(info.get('namespace', self.namespace) for info in self.output_msg_writers.values())
+                
+                if msg_namespace not in handled_namespaces:
                     continue
                 
                 # Handle topic confirmations
@@ -587,7 +641,7 @@ class RosBridgeHandler(sysModel.SysModel):
                         self.confirmed_topics.add(request_id)
                         self._log_info(
                             f"Received topic confirmation for "
-                            f"/{self.namespace}/bsk/{command_data.get('direction', '')}/{command_data.get('topic_name', '')}"
+                            f"/{command_data.get('namespace', 'unknown')}/bsk/{command_data.get('direction', '')}/{command_data.get('topic_name', '')}"
                         )
                     continue
                     
@@ -597,7 +651,7 @@ class RosBridgeHandler(sysModel.SysModel):
                 
                 # Find writer and process message
                 writer_info = next((info for info in self.output_msg_writers.values() 
-                                  if info['msg_type'] == msg_type_name), None)
+                                  if info['msg_type'] == msg_type_name and info.get('namespace') == msg_namespace), None)
                 if writer_info:
                     # Convert JSON to BSK message and write
                     msg_payload = self._json_to_bsk_msg(command_data, msg_type_name)
