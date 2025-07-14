@@ -2,9 +2,9 @@ import os
 from Basilisk import __path__
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
-from Basilisk.fswAlgorithms import thrForceMapping, thrFiringSchmitt, hillStateConverter
+from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter
 from Basilisk.simulation import simSynch, simpleNav
-from Basilisk.architecture import messaging, bskLogging
+from Basilisk.architecture import bskLogging
 try:
     from Basilisk.simulation import vizInterface
 except ImportError:

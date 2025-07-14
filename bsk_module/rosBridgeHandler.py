@@ -12,7 +12,6 @@ import time
 import orjson  # Faster JSON processing than standard json
 import numpy as np
 import re
-import gc
 
 # Module discovery
 import inspect

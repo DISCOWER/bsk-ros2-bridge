@@ -2,7 +2,7 @@ import os
 from Basilisk import __path__
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
-from Basilisk.fswAlgorithms import thrForceMapping, thrFiringSchmitt, hillStateConverter, forceTorqueThrForceMapping
+from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter, forceTorqueThrForceMapping
 from Basilisk.simulation import simSynch, simpleNav
 from Basilisk.architecture import messaging, bskLogging
 try:
