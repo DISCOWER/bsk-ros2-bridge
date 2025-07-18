@@ -39,7 +39,7 @@ source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosBasic_TH.py
 
 # Terminal 3: Start controller
-ros2 run bsk_ros_bridge ex_data_processor --ros-args -p mode:=direct_allocation
+ros2 run bsk_ros_bridge example_data_processor --ros-args -p mode:=direct_allocation
 ```
 
 ## Examples
@@ -69,8 +69,8 @@ source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosFormation_TH.py
 
 # Control each spacecraft separately
-ros2 run bsk_ros_bridge ex_data_processor --ros-args -p namespace:=/bskSat0 -p mode:=direct_allocation
-ros2 run bsk_ros_bridge ex_data_processor --ros-args -p namespace:=/bskSat1 -p mode:=direct_allocation
+ros2 run bsk_ros_bridge example_data_processor --ros-args -p namespace:=/bskSat0 -p mode:=direct_allocation
+ros2 run bsk_ros_bridge example_data_processor --ros-args -p namespace:=/bskSat1 -p mode:=direct_allocation
 ```
 
 ## Development
