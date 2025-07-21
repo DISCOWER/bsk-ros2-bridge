@@ -1,5 +1,4 @@
 import numpy as np
-import time
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -7,17 +6,16 @@ from bsk_msgs.msg import CmdForceBodyMsgPayload, CmdTorqueBodyMsgPayload, SCStat
 
 class BasiliskDataProcessor(Node):
     def __init__(self):
-        # Initialize node with use_sim_time=True as default
         super().__init__("bsk_data_processor", 
+                        namespace='bskSat',
                         parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        
+        # Get the namespace
+        self.namespace = self.get_namespace()
         
         # Declare ROS2 parameter for thruster mode (direct allocation or wrench)
         self.declare_parameter('mode', 'direct_allocation')
         self.mode = self.get_parameter('mode').get_parameter_value().string_value
-        
-        # Get namespace from parameter (can be set via ros2 run --ros-args -p namespace:=/bskSat0)
-        self.declare_parameter('namespace', '/bskSat')
-        self.namespace = self.get_parameter('namespace').get_parameter_value().string_value
         
         self.get_logger().info(f"Starting BasiliskDataProcessor for namespace: {self.namespace}")
         self.get_logger().info(f"Mode: {self.mode}")
@@ -25,7 +23,7 @@ class BasiliskDataProcessor(Node):
         # Subscribers - Listen to Basilisk output messages
         self.state_sub = self.create_subscription(
             SCStatesMsgPayload, 
-            f"{self.namespace}/bsk/out/sc_states", 
+            "bsk/out/sc_states", 
             self.state_callback, 
             10
         )
@@ -35,18 +33,18 @@ class BasiliskDataProcessor(Node):
         if self.mode == 'direct_allocation':
             self.force_pub = self.create_publisher(
                 THRArrayCmdForceMsgPayload, 
-                f"{self.namespace}/bsk/in/thr_array_cmd_force", 
+                "bsk/in/thr_array_cmd_force", 
                 10
             )
         elif self.mode == 'wrench':
             self.force_pub = self.create_publisher(
                 CmdForceBodyMsgPayload, 
-                f"{self.namespace}/bsk/in/cmd_force", 
+                "bsk/in/cmd_force", 
                 10
             )
             self.torque_pub = self.create_publisher(
                 CmdTorqueBodyMsgPayload,
-                f"{self.namespace}/bsk/in/cmd_torque",
+                "bsk/in/cmd_torque",
                 10
             )
         else:

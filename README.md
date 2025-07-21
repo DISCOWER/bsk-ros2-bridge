@@ -44,7 +44,7 @@ ros2 launch bsk_ros_bridge bridge.launch.py
 source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosBasic_TH.py
 
-# Terminal 3: Start controller
+# Terminal 3: Start controller (uses default namespace 'bskSat')
 ros2 run bsk_ros_bridge example_data_processor --ros-args -p mode:=direct_allocation
 ```
 
@@ -75,8 +75,8 @@ source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosFormation_TH.py
 
 # Control each spacecraft separately
-ros2 run bsk_ros_bridge example_data_processor --ros-args -p namespace:=/bskSat0 -p mode:=direct_allocation
-ros2 run bsk_ros_bridge example_data_processor --ros-args -p namespace:=/bskSat1 -p mode:=direct_allocation
+ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat0 -p mode:=direct_allocation
+ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat1 -p mode:=direct_allocation
 ```
 
 ### Time Synchronization
