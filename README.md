@@ -79,6 +79,16 @@ ros2 run bsk_ros_bridge example_data_processor --ros-args -p namespace:=/bskSat0
 ros2 run bsk_ros_bridge example_data_processor --ros-args -p namespace:=/bskSat1 -p mode:=direct_allocation
 ```
 
+### Time Synchronization
+
+The bridge automatically publishes Basilisk simulation time to `/clock` using `rosgraph_msgs/Clock`. To enable ROS2 nodes to use simulation time:
+
+```bash
+ros2 run your_node --ros-args -p use_sim_time:=true
+```
+
+This ensures all ROS2 nodes are synchronized with the Basilisk simulation time instead of system time.
+
 ## Development
 
 ### Integrating RosBridgeHandler in Scenarios
@@ -124,7 +134,7 @@ ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace
 Topics follow the pattern: `/[namespace]/bsk/[direction]/[topic_name]`
 
 **Common Topics:**
-- `/bsk_sim_time` - Simulation time sync
+- `/clock` - Simulation time synchronization
 - `/[namespace]/bsk/out/sc_states` - Spacecraft states  
 - `/[namespace]/bsk/in/thr_array_cmd_force` - Thruster commands
 - `/[namespace]/bsk/in/cmd_force` - Force commands
