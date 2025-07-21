@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bsk_ros_bridge</name>
+  <version>0.1.0</version>
+  <description>ROS2 Bridge for Basilisk</description>
+  <maintainer email="eliaskra@kth.se">Elias Krantz</maintainer>
+  <license>BSD-3</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>bsk_msgs</exec_depend>
+  <exec_depend>pyzmq</exec_depend>
+  <exec_depend>python3-orjson</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
