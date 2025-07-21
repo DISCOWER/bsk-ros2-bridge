@@ -26,6 +26,12 @@ git clone https://github.com/Thomas-Chan-2019/srl-ros2-BSK-bridge.git bsk_ros_br
 cd ..
 colcon build --packages-select bsk_ros_bridge
 source install/setup.bash
+
+# Install required packages from `requirements.txt`
+# This snippet has to be run as GLOBAL pip installation, it might not work within virtual environments (e.g., python venv, conda env).
+cd your_ros2_workspace/src/bsk_ros_bridge
+pip install -r requirements.txt
+
 ```
 
 ### 2. Run Example
