@@ -121,12 +121,12 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     thrusterSet.cmdsInMsg.subscribeTo(thrFiringSchmittObj.onTimeOutMsg)
 
     # Add models to simulation tasks
-    scSim.AddModelToTask(simTaskName, ros_bridge, 100)
-    scSim.AddModelToTask(simTaskName, scObject, 1)
-    scSim.AddModelToTask(simTaskName, thrusterSet, 5)
+    scSim.AddModelToTask(fswTaskName, ros_bridge, 1)
+    scSim.AddModelToTask(simTaskName, scObject, 10)
+    scSim.AddModelToTask(simTaskName, thrusterSet, 7)
     
-    scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj, 6)
-    scSim.AddModelToTask(fswTaskName, thrForceMapping, 80)
+    scSim.AddModelToTask(simTaskName, thrFiringSchmittObj, 8)
+    scSim.AddModelToTask(fswTaskName, thrForceMapping, 9)
 
     # Vizard support (optional)
     if vizSupport.vizFound:

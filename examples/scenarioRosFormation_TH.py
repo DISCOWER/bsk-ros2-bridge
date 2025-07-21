@@ -1,7 +1,7 @@
 import os
 from Basilisk import __path__
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector
-from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
+from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, simIncludeGravBody, orbitalMotion
 from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter
 from Basilisk.simulation import simSynch, simpleNav
 from Basilisk.architecture import bskLogging, sysModel
@@ -124,7 +124,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
                 loc,
                 dir,
                 MaxThrust=1.5,
-                cutoffFrequency=6.28
+                cutoffFrequency=10*2*3.14159
             )
         thFactory_i.addToSpacecraft(f"ThrusterDynamics{i}", thrusterSet_i, scObject_i)
         thFactory.append(thFactory_i)
@@ -173,15 +173,16 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         hillStateNavObj[i].chiefStateInMsg.subscribeTo(scChiefNav.transOutMsg)
 
     # Add models to simulation tasks
-    scSim.AddModelToTask(simTaskName, scObjectHill, 5)
-    scSim.AddModelToTask(simTaskName, scChiefNav, 51)
-    scSim.AddModelToTask(simTaskName, ros_bridge, 100)
+    scSim.AddModelToTask(simTaskName, scObjectHill, 10)
+    scSim.AddModelToTask(simTaskName, scChiefNav, 6)
+    scSim.AddModelToTask(fswTaskName, ros_bridge, 1)
     for i in range(num_spacecraft):
-        scSim.AddModelToTask(simTaskName, scObject[i], 5)
-        scSim.AddModelToTask(simTaskName, thrusterSet[i], 6)
-        scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj[i], 7)
-        scSim.AddModelToTask(simTaskName, scNavObj[i], 41)
-        scSim.AddModelToTask(fswTaskName, hillStateNavObj[i], 40)
+        scSim.AddModelToTask(simTaskName, scObject[i], 10)
+        scSim.AddModelToTask(simTaskName, thrusterSet[i], 7)
+        scSim.AddModelToTask(simTaskName, thrFiringSchmittObj[i], 8)
+
+        scSim.AddModelToTask(fswTaskName, scNavObj[i], 5)
+        scSim.AddModelToTask(fswTaskName, hillStateNavObj[i], 5)
 
     # Vizard support (optional)
     if vizSupport.vizFound:

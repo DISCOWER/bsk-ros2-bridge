@@ -44,18 +44,18 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
 
     # Define thrusters
     thruster_defs = [
-        ([0, 0, 0.12], [1.5, 0, 0]),
-        ([0, 0, 0.12], [-1.5, 0, 0]),
-        ([0, 0, -0.12], [1.5, 0, 0]),
-        ([0, 0, -0.12], [-1.5, 0, 0]),
-        ([0.12, 0, 0], [0, 1.5, 0]),
-        ([0.12, 0, 0], [0, -1.5, 0]),
-        ([-0.12, 0, 0], [0, 1.5, 0]),
-        ([-0.12, 0, 0], [0, -1.5, 0]),
-        ([0, 0.12, 0], [0, 0, 1.5]),
-        ([0, 0.12, 0], [0, 0, -1.5]),
-        ([0, -0.12, 0], [0, 0, 1.5]),
-        ([0, -0.12, 0], [0, 0, -1.5]),
+        ([0, 0, 0.12], [1, 0, 0]),
+        ([0, 0, 0.12], [-1, 0, 0]),
+        ([0, 0, -0.12], [1, 0, 0]),
+        ([0, 0, -0.12], [-1, 0, 0]),
+        ([0.12, 0, 0], [0, 1, 0]),
+        ([0.12, 0, 0], [0, -1, 0]),
+        ([-0.12, 0, 0], [0, 1, 0]),
+        ([-0.12, 0, 0], [0, -1, 0]),
+        ([0, 0.12, 0], [0, 0, 1]),
+        ([0, 0.12, 0], [0, 0, -1]),
+        ([0, -0.12, 0], [0, 0, 1]),
+        ([0, -0.12, 0], [0, 0, -1]),
     ]
     
     # Create spacecraft
@@ -75,7 +75,9 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
             loc,
             dir,
             MaxThrust=1.5,
-            cutoffFrequency=6.28
+            cutoffFrequency=6.28,
+            MinOnTime=0.0,
+            useMinPulseTime=False
         )
     thFactory.addToSpacecraft("ThrusterDynamics", thrusterSet, scObject)
     fswThrConfigMsg = thFactory.getConfigMessage()
@@ -99,10 +101,10 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     thrusterSet.cmdsInMsg.subscribeTo(thrFiringSchmittObj.onTimeOutMsg)
 
     # Add models to simulation tasks
-    scSim.AddModelToTask(simTaskName, ros_bridge, 100)
-    scSim.AddModelToTask(simTaskName, scObject, 5)
-    scSim.AddModelToTask(simTaskName, thrusterSet, 6)
-    scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj, 7)
+    scSim.AddModelToTask(fswTaskName, ros_bridge, 1)
+    scSim.AddModelToTask(simTaskName, scObject, 10)
+    scSim.AddModelToTask(simTaskName, thrusterSet, 7)
+    scSim.AddModelToTask(simTaskName, thrFiringSchmittObj, 8)
 
     # Vizard support (optional)
     if vizSupport.vizFound:

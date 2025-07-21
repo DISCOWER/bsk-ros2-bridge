@@ -197,17 +197,17 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         hillStateNavObj[i].chiefStateInMsg.subscribeTo(scChiefNav.transOutMsg)
 
     # Add models to simulation tasks
-    scSim.AddModelToTask(simTaskName, scObjectHill, 2)
-    scSim.AddModelToTask(simTaskName, scChiefNav, 50)
-    scSim.AddModelToTask(simTaskName, ros_bridge, 100)
+    scSim.AddModelToTask(simTaskName, scObjectHill, 10)
+    scSim.AddModelToTask(simTaskName, scChiefNav, 6)
+    scSim.AddModelToTask(fswTaskName, ros_bridge, 1)
     for i in range(num_spacecraft):
-        scSim.AddModelToTask(simTaskName, scObject[i], 1)
-        scSim.AddModelToTask(simTaskName, thrusterSet[i], 5)
+        scSim.AddModelToTask(simTaskName, scObject[i], 10)
+        scSim.AddModelToTask(simTaskName, thrusterSet[i], 7)
+        scSim.AddModelToTask(simTaskName, thrFiringSchmittObj[i], 8)
         
-        scSim.AddModelToTask(fswTaskName, scNavObj[i], 41)
-        scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj[i], 6)
-        scSim.AddModelToTask(fswTaskName, hillStateNavObj[i], 40)
-        scSim.AddModelToTask(fswTaskName, thrForceMapping[i], 80)
+        scSim.AddModelToTask(fswTaskName, scNavObj[i], 5)
+        scSim.AddModelToTask(fswTaskName, hillStateNavObj[i], 5)
+        scSim.AddModelToTask(fswTaskName, thrForceMapping[i], 9)
 
     # Vizard support (optional)
     if vizSupport.vizFound:
