@@ -1,3 +1,20 @@
-*.pyc
-.vscode/
+build/*
+install/*
+log/*
+dist/*
 __pycache__/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+.vscode/*
+*.code-workspace
+
+*c_generated_code*
+*.json
