@@ -1,12 +1,15 @@
+import numpy as np
+import time
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from bsk_msgs.msg import CmdForceBodyMsgPayload, CmdTorqueBodyMsgPayload, SCStatesMsgPayload, THRArrayCmdForceMsgPayload
-from std_msgs.msg import Float64
-import numpy as np
 
 class BasiliskDataProcessor(Node):
     def __init__(self):
-        super().__init__("bsk_data_processor")
+        # Initialize node with use_sim_time=True as default
+        super().__init__("bsk_data_processor", 
+                        parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)])
         
         # Declare ROS2 parameter for thruster mode (direct allocation or wrench)
         self.declare_parameter('mode', 'direct_allocation')
@@ -18,17 +21,6 @@ class BasiliskDataProcessor(Node):
         
         self.get_logger().info(f"Starting BasiliskDataProcessor for namespace: {self.namespace}")
         self.get_logger().info(f"Mode: {self.mode}")
-        
-        # Track simulation time
-        self.sim_time = 0.0
-        
-        # Subscribe to simulation time
-        self.sim_time_sub = self.create_subscription(
-            Float64,
-            '/bsk_sim_time',
-            self.sim_time_callback,
-            10
-        )
         
         # Subscribers - Listen to Basilisk output messages
         self.state_sub = self.create_subscription(
@@ -61,16 +53,29 @@ class BasiliskDataProcessor(Node):
             self.get_logger().error(f"Unknown mode: {self.mode}. Use 'direct_allocation' or 'wrench'.")
             return
 
+        # Check if use_sim_time is enabled
+        if self.get_parameter('use_sim_time').get_parameter_value().bool_value:
+            self.get_logger().info("Using simulation time, waiting for /clock...")
+            self.wait_for_clock()
+
         timer_cmd_period = 0.1  # seconds
         self.create_timer(timer_cmd_period, self.cmd_callback)
 
-    def sim_time_callback(self, msg: Float64):
-        """Update simulation time from Basilisk."""
-        self.sim_time = msg.data
+    def wait_for_clock(self):
+        """Wait for the /clock topic to start publishing."""
+        rate = self.create_rate(10)  # 10 Hz
+        warned = False
+        while rclpy.ok():
+            topics = dict(self.get_topic_names_and_types())
+            if '/clock' in topics:
+                return
+            if not warned:
+                self.get_logger().info("Waiting for /clock topic...")
+                warned = True
+            rate.sleep()
 
     def state_callback(self, msg: SCStatesMsgPayload):
         """Process received spacecraft state - implement your control logic here."""
-        # Log basic state info to observe the effects of commands
         pos = msg.r_bn_n
         vel = msg.v_bn_n
         att = msg.sigma_bn
@@ -80,10 +85,8 @@ class BasiliskDataProcessor(Node):
         if self.mode == 'direct_allocation':
             # Create a THRArrayCmdForceMsgPayload message for 12 thrusters
             force_msg = THRArrayCmdForceMsgPayload()
-            # Use simulation time for timestamp synchronization
-            force_msg.stamp.sec = int(self.sim_time)
-            force_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
-            
+            force_msg.stamp = self.get_clock().now().to_msg()
+
             # Set thruster force values (0-1.5 N for each of 12 thrusters)
             for i in range(12):
                 force_msg.thrforce[i] = np.random.uniform(0.0, 1.5)
@@ -103,10 +106,8 @@ class BasiliskDataProcessor(Node):
         elif self.mode == 'wrench':
             # Create a CmdForceBodyMsgPayload message
             force_msg = CmdForceBodyMsgPayload()
-            # Use simulation time for timestamp synchronization
-            force_msg.stamp.sec = int(self.sim_time)
-            force_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
-            
+            force_msg.stamp = self.get_clock().now().to_msg()
+
             # Set dummy force values (Newtons) - replace with actual control law
             force_msg.forcerequestbody[0] = np.random.uniform(-3.0, 3.0)
             force_msg.forcerequestbody[1] = np.random.uniform(-3.0, 3.0)
@@ -114,9 +115,7 @@ class BasiliskDataProcessor(Node):
         
             # Create a CmdTorqueBodyMsgPayload message
             torque_msg = CmdTorqueBodyMsgPayload()
-            # Use simulation time for timestamp synchronization
-            torque_msg.stamp.sec = int(self.sim_time)
-            torque_msg.stamp.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
+            torque_msg.stamp = self.get_clock().now().to_msg()
 
             # Set dummy torque values (Newton-meters) - replace with actual control law
             torque_msg.torquerequestbody[0] = np.random.uniform(-0.36, 0.36)

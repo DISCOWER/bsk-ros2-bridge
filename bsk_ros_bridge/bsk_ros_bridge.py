@@ -6,7 +6,7 @@ simulator and ROS2 ecosystem via ZeroMQ messaging with JSON serialization.
 """
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64
+from rosgraph_msgs.msg import Clock
 import bsk_msgs.msg as bsk_msgs
 import zmq
 import threading
@@ -68,7 +68,7 @@ class BskRosBridge(Node):
         
         # Message type discovery and caching
         self._bsk_msg_types = {}      # BSK message type registry
-        self._sim_time_msg = Float64()  # Pre-allocated for performance
+        self._clock_msg = Clock()  # Pre-allocated for performance
         
         # Initialize bridge components
         self._discover_bsk_message_types()
@@ -76,7 +76,7 @@ class BskRosBridge(Node):
         self._start_background_threads()
         
         # Special topic for simulation time synchronization
-        self.sim_time_pub = self.create_publisher(Float64, '/bsk_sim_time', 10)
+        self.clock_pub = self.create_publisher(Clock, '/clock', 10)
         
         self.get_logger().info(
             f"BSK-ROS2 Bridge ready on ports {self.sub_port}/{self.pub_port}/{self.heartbeat_port}"
@@ -291,8 +291,10 @@ class BskRosBridge(Node):
         """Handle simulation time synchronization from BSK."""
         sim_time = data['sim_time']
         if sim_time is not None:
-            self._sim_time_msg.data = float(sim_time)
-            self.sim_time_pub.publish(self._sim_time_msg)
+            # Convert simulation time (seconds) to ROS Clock message
+            self._clock_msg.clock.sec = int(sim_time)
+            self._clock_msg.clock.nanosec = int((sim_time - int(sim_time)) * 1e9)
+            self.clock_pub.publish(self._clock_msg)
 
     def _handle_telemetry_message(self, data):
         """

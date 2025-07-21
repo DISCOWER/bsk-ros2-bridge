@@ -4,14 +4,18 @@ from Basilisk.simulation import spacecraft, thrusterDynamicEffector
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
 from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter
 from Basilisk.simulation import simSynch, simpleNav
-from Basilisk.architecture import bskLogging
+from Basilisk.architecture import bskLogging, sysModel
 try:
     from Basilisk.simulation import vizInterface
 except ImportError:
     pass
 
 import sys, inspect
-filename = inspect.getframeinfo(inspect.currentframe()).filename
+current_frame = inspect.currentframe()
+if current_frame is not None:
+    filename = inspect.getframeinfo(current_frame).filename
+else:
+    filename = __file__
 path = os.path.dirname(os.path.abspath(filename))
 # Add the parent directory to the path to access bsk_module
 sys.path.append(os.path.join(path, '..'))
@@ -60,7 +64,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     # Create a single shared ROS bridge handler for all spacecraft
     ros_bridge = RosBridgeHandler()
     ros_bridge.ModelTag = "ros_bridge"
-    ros_bridge.bskLogger = bskLogging.BSKLogger(bskLogging.BSK_DEBUG)
+    ros_bridge.bskLogger = sysModel.BSKLogger(bskLogging.BSK_DEBUG)
     
     # Initial positions for formation (relative to base orbit)
     relative_positions = [
