@@ -22,7 +22,7 @@ source install/setup.bash
 
 # Install this package
 cd your_ros2_workspace/src
-git clone https://github.com/Thomas-Chan-2019/srl-ros2-BSK-bridge.git bsk_ros_bridge
+git clone https://github.com/Thomas-Chan-2019/bsk_ros_bridge.git bsk_ros_bridge
 cd ..
 colcon build --packages-select bsk_ros_bridge
 source install/setup.bash
