@@ -164,6 +164,6 @@ if __name__ == "__main__":
         broadcastStream=False,
         simTimeStep=1/20.,
         simTime=3600.0,
-        accelFactor=50.0,
+        accelFactor=1.0,
         fswTimeStep=1/10.
     )
