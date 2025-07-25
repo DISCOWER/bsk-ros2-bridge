@@ -1,0 +1,275 @@
+import os
+from Basilisk import __path__
+from Basilisk.simulation import spacecraft, thrusterDynamicEffector
+from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
+from Basilisk.fswAlgorithms import thrFiringSchmitt, forceTorqueThrForceMapping, hillStateConverter, hillPoint, attTrackingError
+from Basilisk.simulation import simSynch, simpleNav
+from Basilisk.architecture import messaging, bskLogging, sysModel
+try:
+    from Basilisk.simulation import vizInterface
+except ImportError:
+    pass
+
+import sys, inspect
+current_frame = inspect.currentframe()
+if current_frame is not None:
+    filename = inspect.getframeinfo(current_frame).filename
+else:
+    filename = __file__
+path = os.path.dirname(os.path.abspath(filename))
+# Add the parent directory to the path to access bsk_module
+sys.path.append(os.path.join(path, '..'))
+from bsk_module.rosBridgeHandler import RosBridgeHandler
+
+def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
+    # Set up simulation classes and processes
+    scSim = SimulationBaseClass.SimBaseClass()
+    simTaskName = "simTask"
+    fswTaskName = "fswTask"
+    simProcess = scSim.CreateNewProcess("simProcess")
+    fswProcess = scSim.CreateNewProcess("fswProcess")
+    simTimeStep = macros.sec2nano(simTimeStep)
+    simProcess.addTask(scSim.CreateNewTask(simTaskName, simTimeStep))
+    fswTimeStep = macros.sec2nano(fswTimeStep)
+    fswProcess.addTask(scSim.CreateNewTask(fswTaskName, fswTimeStep))
+
+    # Add spacecraft definitions
+    m = 17.8  # kg, spacecraft mass
+    I = [0.314, 0, 0, 0, 0.314, 0, 0, 0, 0.314]
+    
+    # Create a single shared ROS bridge handler for all spacecraft
+    ros_bridge = RosBridgeHandler()
+    ros_bridge.ModelTag = "ros_bridge"
+    ros_bridge.bskLogger = sysModel.BSKLogger(bskLogging.BSK_DEBUG)
+
+    # Initial positions for formation (relative to base orbit)
+    relative_positions = [
+        [0, 30, 0],
+        [30, 0, 0],
+        # [-3, 0, 0],
+        # [0, -3, 0],
+        # [2.5, 2.5, 0],
+        [25, -25, 0],
+        [-25, 25, 0]
+    ]
+    num_spacecraft = len(relative_positions)
+
+    # Define thrusters
+    thruster_defs = [
+        ([0, 0, 0.12], [1, 0, 0]),
+        ([0, 0, 0.12], [-1, 0, 0]),
+        ([0, 0, -0.12], [1, 0, 0]),
+        ([0, 0, -0.12], [-1, 0, 0]),
+        ([0.12, 0, 0], [0, 1, 0]),
+        ([0.12, 0, 0], [0, -1, 0]),
+        ([-0.12, 0, 0], [0, 1, 0]),
+        ([-0.12, 0, 0], [0, -1, 0]),
+        ([0, 0.12, 0], [0, 0, 1]),
+        ([0, 0.12, 0], [0, 0, -1]),
+        ([0, -0.12, 0], [0, 0, 1]),
+        ([0, -0.12, 0], [0, 0, -1]),
+    ]
+    
+    # Virtual Center spacecraft
+    scObjectHill = spacecraft.Spacecraft()
+    scObjectHill.ModelTag = "bskSatHill"
+    rN = [0, 0, 0]  # m   - r_BN_N
+    vN = [0, 0, 0]  # m/s - v_BN_N
+    scObjectHill.hub.r_CN_NInit = rN  # m   - r_BN_N
+    scObjectHill.hub.v_CN_NInit = vN  # m/s - v_BN_N
+    scChiefNav = simpleNav.SimpleNav()
+    scChiefNav.ModelTag = f"chiefNav"
+    # Create hillPoint() object for the virtual Hill spacecraft to provide attitude reference for other spacecraft.
+    scChiefHillPointObject = hillPoint.hillPoint()
+    scChiefHillPointObject.ModelTag = f"chiefHillPoint"
+    
+    # Lists to store spacecraft and thruster objects
+    scObject = []
+    thFactory = []
+    thrusterSet = []
+    thrFiringSchmittObj = []
+    fswThrConfigMsg = []
+    hillStateNavObj = []
+    scNavObj = []
+    thrForceMapping = []
+    # hillPointObj = [] # probably not needed in this scenario, since we only need ONE Hill-reference from the virtual Hill spacecraft.
+    attTrackObj = []
+    
+    for i in range(num_spacecraft):
+        # Create spacecraft
+        scObject_i = spacecraft.Spacecraft()
+        scObject_i.ModelTag = f"bskSat{i}"
+        scObject_i.hub.mHub = m
+        scObject_i.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
+        scObject_i.hub.r_CN_NInit = [rN[j] + relative_positions[i][j] for j in range(3)]
+        scObject_i.hub.v_CN_NInit = vN
+        scObject.append(scObject_i)
+        
+        # Setup thrusters for spacecraft
+        thrusterSet_i = thrusterDynamicEffector.ThrusterDynamicEffector()
+        thrusterSet.append(thrusterSet_i)
+        thFactory_i = simIncludeThruster.thrusterFactory()
+        for loc, dir in thruster_defs:
+            thFactory_i.create(
+                'MOOG_Monarc_1',
+                loc,
+                dir,
+                MaxThrust=1.5,
+                cutoffFrequency=6.28
+            )
+        thFactory_i.addToSpacecraft(f"ThrusterDynamics{i}", thrusterSet_i, scObject_i)
+        thFactory.append(thFactory_i)
+        fswThrConfigMsg_i = fswSetupThrusters.writeConfigMessage()
+        fswThrConfigMsg_i = thFactory_i.getConfigMessage()
+        fswThrConfigMsg.append(fswThrConfigMsg_i)
+        
+        # Setup force/torque to thruster mapping
+        thrForceMapping_i = forceTorqueThrForceMapping.forceTorqueThrForceMapping()
+        thrForceMapping_i.ModelTag = f"thrForceMapping{i}"
+        thrForceMapping.append(thrForceMapping_i)
+        
+        # Setup ROS bridge - Set up subscribers and publishers
+        ros_bridge.add_ros_subscriber('CmdForceBodyMsgPayload', 'CmdForceBodyMsgOut', 'cmd_force', f'bskSat{i}')
+        ros_bridge.add_ros_subscriber('CmdTorqueBodyMsgPayload', 'CmdTorqueBodyMsgOut', 'cmd_torque', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('CmdForceBodyMsgPayload', 'CmdForceBodyMsgIn', 'cmd_force', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('CmdTorqueBodyMsgPayload', 'CmdTorqueBodyMsgIn', 'cmd_torque', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('HillRelStateMsgPayload', 'HillRelStateMsgIn', 'hill_rel_state', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('AttGuidMsgPayload', 'AttGuidMsgIn', 'att_guid', f'bskSat{i}')
+        
+
+        # Setup the Schmitt trigger thruster firing logic module
+        thrFiringSchmittObj_i = thrFiringSchmitt.thrFiringSchmitt()
+        thrFiringSchmittObj_i.ModelTag = f"thrFiringSchmitt{i}"
+        thrFiringSchmittObj.append(thrFiringSchmittObj_i)
+
+        # Navigation modules with proper priorities to avoid NavTransMsg errors
+        scNavObj_i = simpleNav.SimpleNav()
+        scNavObj_i.ModelTag = f"nav{i}"
+        scNavObj.append(scNavObj_i)
+        
+        hillStateNavObj_i = hillStateConverter.hillStateConverter()
+        hillStateNavObj_i.ModelTag = f"hillStateNavObj{i}"
+        hillStateNavObj.append(hillStateNavObj_i)
+        
+        # Module to compute attitude tracking error sigma_B/R --> R is Hill-frame in our case.
+        attTrackObj_i = attTrackingError.attTrackingError()
+        attTrackObj_i.ModelTag = f"attTrackObj{i}"
+        attTrackObj.append(attTrackObj_i)
+
+    # Connect messages
+    scChiefNav.scStateInMsg.subscribeTo(scObjectHill.scStateOutMsg)
+    scChiefHillPointObject.transNavInMsg.subscribeTo(scChiefNav.transOutMsg)
+    
+    for i in range(num_spacecraft):
+        # Create vehicle configuration messages for each spacecraft
+        vehicleConfigOut = messaging.VehicleConfigMsgPayload()
+        vehicleConfigOut.ISCPntB_B = I
+        vcMsg = messaging.VehicleConfigMsg().write(vehicleConfigOut)
+        
+        # Get namespace object dynamically
+        ros_bridge_i = getattr(ros_bridge, f'bskSat{i}')
+        
+        # Connect spacecraft state messages using namespace syntax
+        ros_bridge_i.SCStatesMsgIn.subscribeTo(scObject[i].scStateOutMsg)
+        ros_bridge_i.CmdForceBodyMsgIn.subscribeTo(ros_bridge_i.CmdForceBodyMsgOut)
+        ros_bridge_i.CmdTorqueBodyMsgIn.subscribeTo(ros_bridge_i.CmdTorqueBodyMsgOut)
+        ros_bridge_i.THRArrayCmdForceMsgIn.subscribeTo(thrForceMapping[i].thrForceCmdOutMsg)
+        ros_bridge_i.HillRelStateMsgIn.subscribeTo(hillStateNavObj[i].hillStateOutMsg)
+        ros_bridge_i.AttGuidMsgIn.subscribeTo(attTrackObj[i].attGuidOutMsg)
+        
+        # Connect force/torque mapping
+        thrForceMapping[i].thrConfigInMsg.subscribeTo(fswThrConfigMsg[i])
+        thrForceMapping[i].vehConfigInMsg.subscribeTo(vcMsg)
+        thrForceMapping[i].cmdForceInMsg.subscribeTo(ros_bridge_i.CmdForceBodyMsgOut)
+        thrForceMapping[i].cmdTorqueInMsg.subscribeTo(ros_bridge_i.CmdTorqueBodyMsgOut)
+        
+        # Connect thruster logic
+        thrFiringSchmittObj[i].thrConfInMsg.subscribeTo(fswThrConfigMsg[i])
+        thrFiringSchmittObj[i].thrForceInMsg.subscribeTo(thrForceMapping[i].thrForceCmdOutMsg)
+        thrusterSet[i].cmdsInMsg.subscribeTo(thrFiringSchmittObj[i].onTimeOutMsg)
+
+        # Navigation connections
+        scNavObj[i].scStateInMsg.subscribeTo(scObject[i].scStateOutMsg)
+        hillStateNavObj[i].depStateInMsg.subscribeTo(scNavObj[i].transOutMsg)
+        hillStateNavObj[i].chiefStateInMsg.subscribeTo(scChiefNav.transOutMsg)
+        
+        # Attitude tracking connections
+        attTrackObj[i].attNavInMsg.subscribeTo(scNavObj[i].attOutMsg)
+        attTrackObj[i].attRefInMsg.subscribeTo(scChiefHillPointObject.attRefOutMsg) # check if this is correct, currently only reference to virtual Hill spacecraft.
+
+    # Add models to simulation tasks
+    scSim.AddModelToTask(simTaskName, scObjectHill, 10)
+    scSim.AddModelToTask(simTaskName, scChiefNav, 6)
+    scSim.AddModelToTask(simTaskName, scChiefHillPointObject, 6)
+    # Debug processes
+    scSim.AddModelToTask(simTaskName, ros_bridge, 100)
+    
+    for i in range(num_spacecraft):
+        scSim.AddModelToTask(simTaskName, scObject[i], 10)
+        scSim.AddModelToTask(simTaskName, thrusterSet[i], 7)
+        scSim.AddModelToTask(simTaskName, thrFiringSchmittObj[i], 8)
+        
+        # Debug processes
+        scSim.AddModelToTask(simTaskName, thrForceMapping[i], 9)
+        scSim.AddModelToTask(simTaskName, thrForceMapping[i], 9)
+        
+        scSim.AddModelToTask(simTaskName, scNavObj[i], 5)
+        scSim.AddModelToTask(simTaskName, hillStateNavObj[i], 5)
+        scSim.AddModelToTask(simTaskName, attTrackObj[i], 5)
+        
+
+    # Vizard support (optional)
+    if vizSupport.vizFound:
+        scDataList = []
+        thrEffectorList = []
+        for i in range(num_spacecraft):
+            thrEffectorList.append([thrusterSet[i]])
+        
+        # Collect spacecraft data and thruster sets for all spacecraft
+        for i, scObject_i in enumerate(scObject):
+            scData = vizInterface.VizSpacecraftData()
+            scData.spacecraftName = scObject_i.ModelTag
+            scData.scStateInMsg.subscribeTo(scObject_i.scStateOutMsg)
+            scDataList.append(scData)
+            
+        clockSync = simSynch.ClockSynch()
+        clockSync.accelFactor = accelFactor
+        scSim.AddModelToTask(simTaskName, clockSync)
+        
+        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject,
+                              thrEffectorList=thrEffectorList,
+                              liveStream=liveStream,
+                              broadcastStream=broadcastStream,
+                              )
+        for scObject_i in scObject:
+            vizSupport.createCustomModel(viz,
+                                        simBodiesToModify=[scObject_i.ModelTag],
+                                        modelPath='bskSat',
+                                        scale=[0.1, 0.1, 0.1])
+        
+        # viz.settings.showSpacecraftLabels = True
+        # viz.settings.orbitLinesOn = 2  # show osculating relative orbit trajectories
+        # viz.settings.mainCameraTarget = "bskSat0"
+        # viz.liveSettings.relativeOrbitChief = "bskSat0"  # set the chief for relative orbit trajectory
+            
+        
+    # Run the simulation
+    scSim.InitializeSimulation()
+    incrementalStopTime = 0
+    while incrementalStopTime < macros.sec2nano(simTime):
+        incrementalStopTime += simTimeStep
+        scSim.ConfigureStopTime(incrementalStopTime)
+        scSim.ExecuteSimulation()
+    return
+
+if __name__ == "__main__":
+    run(
+        liveStream=True,
+        broadcastStream=False,
+        simTimeStep=1/20.,
+        simTime=3600.0,
+        accelFactor=1.0,
+        fswTimeStep=1/10.
+    )
