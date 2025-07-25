@@ -249,10 +249,10 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
 
 if __name__ == "__main__":
     run(
-        liveStream=True,
-        broadcastStream=False,
-        simTimeStep=1/20.,
+        liveStream=False,
+        broadcastStream=True,
+        simTimeStep=1/50.,
         simTime=3600.0,
-        accelFactor=1.0,
+        accelFactor=5.0,
         fswTimeStep=1/10.
     )

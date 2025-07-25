@@ -26,8 +26,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     scSim = SimulationBaseClass.SimBaseClass()
     simTaskName = "simTask"
     fswTaskName = "fswTask"
-    simProcess = scSim.CreateNewProcess("simProcess")
-    fswProcess = scSim.CreateNewProcess("fswProcess")
+    simProcess = scSim.CreateNewProcess("simProcess", 100)
+    fswProcess = scSim.CreateNewProcess("fswProcess", 200)
     simTimeStep = macros.sec2nano(simTimeStep)
     simProcess.addTask(scSim.CreateNewTask(simTaskName, simTimeStep))
     fswTimeStep = macros.sec2nano(fswTimeStep)
@@ -75,7 +75,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
             loc,
             dir,
             MaxThrust=1.5,
-            cutoffFrequency=6.28
+            cutoffFrequency=3141.6, # 500 Hz
+            MinOnTime=0.001,
         )
     thFactory.addToSpacecraft("ThrusterDynamics", thrusterSet, scObject)
     fswThrConfigMsg = fswSetupThrusters.writeConfigMessage()
@@ -96,6 +97,9 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     # Setup the Schmitt trigger thruster firing logic module
     thrFiringSchmittObj = thrFiringSchmitt.thrFiringSchmitt()
     thrFiringSchmittObj.ModelTag = "thrFiringSchmitt"
+    thrFiringSchmittObj.thrMinFireTime = 0.0001
+    thrFiringSchmittObj.level_on = 0.95
+    thrFiringSchmittObj.level_off = 0.05
 
     # Connect messages
     # Create vehicle configuration messages for each spacecraft
@@ -121,12 +125,12 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     thrusterSet.cmdsInMsg.subscribeTo(thrFiringSchmittObj.onTimeOutMsg)
 
     # Add models to simulation tasks
-    scSim.AddModelToTask(fswTaskName, ros_bridge, 1)
+    scSim.AddModelToTask(simTaskName, thrusterSet, 10)
     scSim.AddModelToTask(simTaskName, scObject, 10)
-    scSim.AddModelToTask(simTaskName, thrusterSet, 7)
-    
-    scSim.AddModelToTask(simTaskName, thrFiringSchmittObj, 8)
-    scSim.AddModelToTask(fswTaskName, thrForceMapping, 9)
+
+    scSim.AddModelToTask(fswTaskName, ros_bridge, 100)
+    scSim.AddModelToTask(fswTaskName, thrForceMapping, 11)
+    scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj, 10)
 
     # Vizard support (optional)
     if vizSupport.vizFound:
@@ -160,10 +164,10 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
 
 if __name__ == "__main__":
     run(
-        liveStream=True,
-        broadcastStream=False,
-        simTimeStep=1/20.,
+        liveStream=False,
+        broadcastStream=True,
+        simTimeStep=1/50.,
         simTime=3600.0,
-        accelFactor=1.0,
+        accelFactor=5.0,
         fswTimeStep=1/10.
     )
