@@ -45,7 +45,7 @@ source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosBasic_TH.py
 
 # Terminal 3: Start controller (uses default namespace 'bskSat')
-ros2 run bsk_ros_bridge example_data_processor --ros-args -p mode:=direct_allocation
+ros2 run bsk_ros_bridge example_data_processor --ros-args -p mode:=da
 ```
 
 ## Examples
@@ -59,7 +59,7 @@ ros2 run bsk_ros_bridge example_data_processor --ros-args -p mode:=direct_alloca
 
 ### Control Modes
 
-**Direct Allocation (`direct_allocation`)**
+**Direct Allocation (`da`)**
 - Commands 12 individual thrusters (0-1.5N each)
 - Topic: `/[namespace]/bsk/in/thr_array_cmd_force`
 
@@ -75,8 +75,8 @@ source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosFormation_TH.py
 
 # Control each spacecraft separately
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat0 -p mode:=direct_allocation
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat1 -p mode:=direct_allocation
+ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat0 -p mode:=da
+ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat1 -p mode:=da
 ```
 
 ### Time Synchronization
