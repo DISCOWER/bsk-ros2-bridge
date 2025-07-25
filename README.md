@@ -166,7 +166,14 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 ## Troubleshooting
 
 **Missing message types:** Ensure `bsk_msgs` is built and sourced
-**Port conflicts:** Check ports with `lsof -i :5550 :5551 :5552`  
+
+**Port conflicts:** Check ports status with: 
+```bash
+lsof -i :5550 && lsof -i :5551 && lsof -i :5552
+# Kill occupied ports via PID if they are not closed properly:
+kill -9 {port PID}
+```
+
 **Connection issues:** Ensure bridge is running, verify BSK environment is activated
 
 ## References
