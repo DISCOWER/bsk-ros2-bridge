@@ -2,7 +2,7 @@ import os
 from Basilisk import __path__
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
-from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter, forceTorqueThrForceMapping
+from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter, forceTorqueThrForceMapping, hillPoint, attTrackingError
 from Basilisk.simulation import simSynch, simpleNav
 from Basilisk.architecture import messaging, bskLogging, sysModel
 try:
@@ -20,14 +20,15 @@ path = os.path.dirname(os.path.abspath(filename))
 # Add the parent directory to the path to access bsk_module
 sys.path.append(os.path.join(path, '..'))
 from bsk_module.rosBridgeHandler import RosBridgeHandler
+from examples.utils.tools import get_initial_conditions_from_hill
 
 def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
     # Set up simulation classes and processes
     scSim = SimulationBaseClass.SimBaseClass()
     simTaskName = "simTask"
     fswTaskName = "fswTask"
-    simProcess = scSim.CreateNewProcess("simProcess")
-    fswProcess = scSim.CreateNewProcess("fswProcess")
+    simProcess = scSim.CreateNewProcess("simProcess", 100)
+    fswProcess = scSim.CreateNewProcess("fswProcess", 200)
     simTimeStep = macros.sec2nano(simTimeStep)
     simProcess.addTask(scSim.CreateNewTask(simTaskName, simTimeStep))
     fswTimeStep = macros.sec2nano(fswTimeStep)
@@ -39,11 +40,11 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     planet.isCentralBody = True
     mu = planet.mu
     oe = orbitalMotion.ClassicElements()
-    oe.a = (6378 + 800) * 1000 # m, Semi-major axis
-    oe.e = 0.01
-    oe.i = 51.6342 * macros.D2R
+    oe.a = (6378 + 400) * 1000 # m, Semi-major axis
+    oe.e = 0.001
+    oe.i = 45 * macros.D2R
     oe.Omega = 270 * macros.D2R
-    oe.omega = 9.5212 * macros.D2R
+    oe.omega = 90 * macros.D2R
     oe.f = 90 * macros.D2R
     rN, vN = orbitalMotion.elem2rv(mu, oe)
     oe = orbitalMotion.rv2elem(mu, rN, vN)
@@ -56,10 +57,12 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     gravFactory.addBodiesTo(scObjectHill)
     scChiefNav = simpleNav.SimpleNav()
     scChiefNav.ModelTag = f"chiefNav"
+    scChiefHillPointObject = hillPoint.hillPoint()
+    scChiefHillPointObject.ModelTag = f"chiefHillPoint"
 
     # Add spacecraft definitions
     m = 17.8  # kg, spacecraft mass
-    I = [0.314, 0, 0, 0, 0.314, 0, 0, 0, 0.314]
+    I = [0.315, 0, 0, 0, 0.315, 0, 0, 0, 0.315]
     
     # Create a single shared ROS bridge handler for all spacecraft
     ros_bridge = RosBridgeHandler()
@@ -68,13 +71,12 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     
     # Initial positions for formation (relative to base orbit)
     relative_positions = [
-        [0, 3, 0],
         [3, 0, 0],
         [-3, 0, 0],
+        [0, 3, 0],
         [0, -3, 0],
-        [2.5, 2.5, 0],
-        [2.5, -2.5, 0],
-        [-2.5, 2.5, 0]
+        [0, 0, 3],
+        [0, 0, -3],
     ]
     num_spacecraft = len(relative_positions)
 
@@ -103,6 +105,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     hillStateNavObj = []
     scNavObj = []
     thrForceMapping = []
+    attTrackObj = []
     
     for i in range(num_spacecraft):
         # Create spacecraft
@@ -110,8 +113,9 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         scObject_i.ModelTag = f"bskSat{i}"
         scObject_i.hub.mHub = m
         scObject_i.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
-        scObject_i.hub.r_CN_NInit = [rN[j] + relative_positions[i][j] for j in range(3)]
-        scObject_i.hub.v_CN_NInit = vN
+        r, v = get_initial_conditions_from_hill(mu, rN, vN, relative_positions[i], [0, 0, 0])
+        scObject_i.hub.r_CN_NInit = r
+        scObject_i.hub.v_CN_NInit = v
         gravFactory.addBodiesTo(scObject_i)
         scObject.append(scObject_i)
         
@@ -125,7 +129,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
                 loc,
                 dir,
                 MaxThrust=1.5,
-                cutoffFrequency=6.28
+                cutoffFrequency=3141.6, # 500 Hz
+                MinOnTime=0.001,
             )
         thFactory_i.addToSpacecraft(f"ThrusterDynamics{i}", thrusterSet_i, scObject_i)
         thFactory.append(thFactory_i)
@@ -142,14 +147,16 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         ros_bridge.add_ros_subscriber('CmdForceBodyMsgPayload', 'CmdForceBodyMsgOut', 'cmd_force', f'bskSat{i}')
         ros_bridge.add_ros_subscriber('CmdTorqueBodyMsgPayload', 'CmdTorqueBodyMsgOut', 'cmd_torque', f'bskSat{i}')
         ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', f'bskSat{i}')
-        ros_bridge.add_ros_publisher('CmdForceBodyMsgPayload', 'CmdForceBodyMsgIn', 'cmd_force', f'bskSat{i}')
-        ros_bridge.add_ros_publisher('CmdTorqueBodyMsgPayload', 'CmdTorqueBodyMsgIn', 'cmd_torque', f'bskSat{i}')
         ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', f'bskSat{i}')
-        ros_bridge.add_ros_publisher('HillRelStateMsgPayload', 'HillRelStateMsgIn', 'hill_rel_state', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('HillRelStateMsgPayload', 'HillRelStateMsgIn', 'hill_trans_state', f'bskSat{i}')
+        ros_bridge.add_ros_publisher('AttGuidMsgPayload', 'AttGuidMsgIn', 'hill_rot_state', f'bskSat{i}')
 
         # Setup the Schmitt trigger thruster firing logic module
         thrFiringSchmittObj_i = thrFiringSchmitt.thrFiringSchmitt()
         thrFiringSchmittObj_i.ModelTag = f"thrFiringSchmitt{i}"
+        thrFiringSchmittObj_i.thrMinFireTime = 0.001
+        thrFiringSchmittObj_i.level_on = 0.95
+        thrFiringSchmittObj_i.level_off = 0.05
         thrFiringSchmittObj.append(thrFiringSchmittObj_i)
 
         # Navigation modules with proper priorities to avoid NavTransMsg errors
@@ -161,8 +168,14 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         hillStateNavObj_i.ModelTag = f"hillStateNavObj{i}"
         hillStateNavObj.append(hillStateNavObj_i)
 
+        # Module to compute attitude tracking error sigma_B/R --> R is Hill-frame in our case.
+        attTrackObj_i = attTrackingError.attTrackingError()
+        attTrackObj_i.ModelTag = f"attTrackObj{i}"
+        attTrackObj.append(attTrackObj_i)
+
     # Connect messages
     scChiefNav.scStateInMsg.subscribeTo(scObjectHill.scStateOutMsg)
+    scChiefHillPointObject.transNavInMsg.subscribeTo(scChiefNav.transOutMsg)
     
     for i in range(num_spacecraft):
         # Create vehicle configuration messages for each spacecraft
@@ -175,10 +188,9 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         
         # Connect spacecraft state messages using namespace syntax
         ros_bridge_i.SCStatesMsgIn.subscribeTo(scObject[i].scStateOutMsg)
-        ros_bridge_i.CmdForceBodyMsgIn.subscribeTo(ros_bridge_i.CmdForceBodyMsgOut)
-        ros_bridge_i.CmdTorqueBodyMsgIn.subscribeTo(ros_bridge_i.CmdTorqueBodyMsgOut)
         ros_bridge_i.THRArrayCmdForceMsgIn.subscribeTo(thrForceMapping[i].thrForceCmdOutMsg)
         ros_bridge_i.HillRelStateMsgIn.subscribeTo(hillStateNavObj[i].hillStateOutMsg)
+        ros_bridge_i.AttGuidMsgIn.subscribeTo(attTrackObj[i].attGuidOutMsg)
         
         # Connect force/torque mapping
         thrForceMapping[i].thrConfigInMsg.subscribeTo(fswThrConfigMsg[i])
@@ -195,19 +207,23 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         scNavObj[i].scStateInMsg.subscribeTo(scObject[i].scStateOutMsg)
         hillStateNavObj[i].depStateInMsg.subscribeTo(scNavObj[i].transOutMsg)
         hillStateNavObj[i].chiefStateInMsg.subscribeTo(scChiefNav.transOutMsg)
+        attTrackObj[i].attNavInMsg.subscribeTo(scNavObj[i].attOutMsg)
+        attTrackObj[i].attRefInMsg.subscribeTo(scChiefHillPointObject.attRefOutMsg)
 
     # Add models to simulation tasks
     scSim.AddModelToTask(simTaskName, scObjectHill, 10)
-    scSim.AddModelToTask(simTaskName, scChiefNav, 6)
-    scSim.AddModelToTask(fswTaskName, ros_bridge, 1)
+    scSim.AddModelToTask(fswTaskName, scChiefNav, 100)
+    scSim.AddModelToTask(fswTaskName, scChiefHillPointObject, 100)
+    scSim.AddModelToTask(fswTaskName, ros_bridge, 1000)
     for i in range(num_spacecraft):
+        scSim.AddModelToTask(simTaskName, thrusterSet[i], 10)
         scSim.AddModelToTask(simTaskName, scObject[i], 10)
-        scSim.AddModelToTask(simTaskName, thrusterSet[i], 7)
-        scSim.AddModelToTask(simTaskName, thrFiringSchmittObj[i], 8)
-        
-        scSim.AddModelToTask(fswTaskName, scNavObj[i], 5)
-        scSim.AddModelToTask(fswTaskName, hillStateNavObj[i], 5)
-        scSim.AddModelToTask(fswTaskName, thrForceMapping[i], 9)
+
+        scSim.AddModelToTask(fswTaskName, scNavObj[i], 90)
+        scSim.AddModelToTask(fswTaskName, hillStateNavObj[i], 80)
+        scSim.AddModelToTask(fswTaskName, attTrackObj[i], 80)
+        scSim.AddModelToTask(fswTaskName, thrForceMapping[i], 11)
+        scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj[i], 10)
 
     # Vizard support (optional)
     if vizSupport.vizFound:
@@ -251,7 +267,7 @@ if __name__ == "__main__":
     run(
         liveStream=False,
         broadcastStream=True,
-        simTimeStep=1/50.,
+        simTimeStep=1/100.,
         simTime=3600.0,
         accelFactor=5.0,
         fswTimeStep=1/10.
