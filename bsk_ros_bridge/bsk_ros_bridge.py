@@ -13,6 +13,7 @@ import threading
 import orjson  # Faster JSON processing than standard json
 import inspect
 import re
+import time
 
 # =============================================================================
 # COMMUNICATION CONFIGURATION
@@ -274,6 +275,7 @@ class BskRosBridge(Node):
                     self._handle_telemetry_message(data)
                     
             except zmq.error.Again:
+                time.sleep(0.01)
                 continue  # No message available, continue loop
             except orjson.JSONDecodeError:
                 self.get_logger().debug("Invalid JSON received from BSK")

@@ -228,11 +228,15 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     # Vizard support (optional)
     if vizSupport.vizFound:
         scDataList = []
-        thrEffectorList = []
+        thrEffectorList = [None]
         for i in range(num_spacecraft):
             thrEffectorList.append([thrusterSet[i]])
         
         # Collect spacecraft data and thruster sets for all spacecraft
+        scData = vizInterface.VizSpacecraftData()
+        scData.spacecraftName = scObjectHill.ModelTag
+        scData.scStateInMsg.subscribeTo(scObjectHill.scStateOutMsg)
+        scDataList.append(scData)
         for i, scObject_i in enumerate(scObject):
             scData = vizInterface.VizSpacecraftData()
             scData.spacecraftName = scObject_i.ModelTag
@@ -243,16 +247,19 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         clockSync.accelFactor = accelFactor
         scSim.AddModelToTask(simTaskName, clockSync)
         
-        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject,
+        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, [scObjectHill] + scObject,
                               thrEffectorList=thrEffectorList,
                               liveStream=liveStream,
-                              broadcastStream=broadcastStream,
-                              )
+                              broadcastStream=broadcastStream)
+        vizSupport.createCustomModel(viz,
+                                    simBodiesToModify=[scObjectHill.ModelTag],
+                                    modelPath='SPHERE',
+                                    scale=[0.1]*3)
         for scObject_i in scObject:
             vizSupport.createCustomModel(viz,
                                         simBodiesToModify=[scObject_i.ModelTag],
                                         modelPath='bskSat',
-                                        scale=[0.1, 0.1, 0.1])
+                                        scale=[0.1]*3)
             
     # Run the simulation
     scSim.InitializeSimulation()

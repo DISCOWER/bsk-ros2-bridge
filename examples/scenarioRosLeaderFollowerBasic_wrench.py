@@ -198,7 +198,7 @@ if __name__ == "__main__":
     run(
         liveStream=False,
         broadcastStream=True,
-        simTimeStep=1/100.,
+        simTimeStep=1/50.,
         simTime=3600.0,
         accelFactor=5.0,
         fswTimeStep=1/10.

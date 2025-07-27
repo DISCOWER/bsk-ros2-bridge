@@ -71,8 +71,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     
     # Initial positions for formation (relative to base orbit)
     relative_positions = [
-        [0, 0, 0],
-        [0, 0, 3],
+        [0, 3, 0],
+        [0, -3, 0],
     ]
     num_spacecraft = len(relative_positions)
 
@@ -224,11 +224,15 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     # Vizard support (optional)
     if vizSupport.vizFound:
         scDataList = []
-        thrEffectorList = []
+        thrEffectorList = [None]
         for i in range(num_spacecraft):
             thrEffectorList.append([thrusterSet[i]])
         
         # Collect spacecraft data and thruster sets for all spacecraft
+        scData = vizInterface.VizSpacecraftData()
+        scData.spacecraftName = scObjectHill.ModelTag
+        scData.scStateInMsg.subscribeTo(scObjectHill.scStateOutMsg)
+        scDataList.append(scData)
         for i, scObject_i in enumerate(scObject):
             scData = vizInterface.VizSpacecraftData()
             scData.spacecraftName = scObject_i.ModelTag
@@ -239,16 +243,19 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         clockSync.accelFactor = accelFactor
         scSim.AddModelToTask(simTaskName, clockSync)
         
-        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject,
+        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, [scObjectHill] + scObject,
                               thrEffectorList=thrEffectorList,
                               liveStream=liveStream,
-                              broadcastStream=broadcastStream,
-                              )
+                              broadcastStream=broadcastStream)
+        vizSupport.createCustomModel(viz,
+                                    simBodiesToModify=[scObjectHill.ModelTag],
+                                    modelPath='SPHERE',
+                                    scale=[0.1]*3)
         for scObject_i in scObject:
             vizSupport.createCustomModel(viz,
                                         simBodiesToModify=[scObject_i.ModelTag],
                                         modelPath='bskSat',
-                                        scale=[0.1, 0.1, 0.1])
+                                        scale=[0.1]*3)
             
     # Run the simulation
     scSim.InitializeSimulation()
@@ -263,7 +270,7 @@ if __name__ == "__main__":
     run(
         liveStream=False,
         broadcastStream=True,
-        simTimeStep=1/100.,
+        simTimeStep=1/50.,
         simTime=3600.0,
         accelFactor=5.0,
         fswTimeStep=1/10.
