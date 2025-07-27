@@ -35,8 +35,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
 
     # Add spacecraft definitions
     m = 17.8  # kg, spacecraft mass
-    I = [0.314, 0, 0, 0, 0.314, 0, 0, 0, 0.314]
-    
+    I = [0.315, 0, 0, 0, 0.315, 0, 0, 0, 0.315]
+
     # Create a single shared ROS bridge handler for all spacecraft
     ros_bridge = RosBridgeHandler()
     ros_bridge.ModelTag = "ros_bridge"
@@ -60,7 +60,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     
     # Create spacecraft
     scObject = spacecraft.Spacecraft()
-    scObject.ModelTag = "bskSat"
+    scObject.ModelTag = "bskSat0"
     scObject.hub.mHub = m
     scObject.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
     scObject.hub.r_CN_NInit = [0, 0, 0]  # m
@@ -82,24 +82,24 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     fswThrConfigMsg = thFactory.getConfigMessage()
     
     # Setup ROS bridge - Set up subscribers and publishers
-    ros_bridge.add_ros_subscriber('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgOut', 'thr_array_cmd_force', 'bskSat')
-    ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat')
-    ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', 'bskSat')
+    ros_bridge.add_ros_subscriber('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgOut', 'thr_array_cmd_force', 'bskSat0')
+    ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat0')
+    ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', 'bskSat0')
 
     # Setup the Schmitt trigger thruster firing logic module
     thrFiringSchmittObj = thrFiringSchmitt.thrFiringSchmitt()
     thrFiringSchmittObj.ModelTag = "thrFiringSchmitt"
-    thrFiringSchmittObj.thrMinFireTime = 0.0001
+    thrFiringSchmittObj.thrMinFireTime = 0.001
     thrFiringSchmittObj.level_on = 0.95
     thrFiringSchmittObj.level_off = 0.05
 
     # Connect messages
-    ros_bridge.bskSat.SCStatesMsgIn.subscribeTo(scObject.scStateOutMsg)
-    ros_bridge.bskSat.THRArrayCmdForceMsgIn.subscribeTo(ros_bridge.bskSat.THRArrayCmdForceMsgOut)
-    
+    ros_bridge.bskSat0.SCStatesMsgIn.subscribeTo(scObject.scStateOutMsg)
+    ros_bridge.bskSat0.THRArrayCmdForceMsgIn.subscribeTo(ros_bridge.bskSat0.THRArrayCmdForceMsgOut)
+
     # Connect thruster logic
     thrFiringSchmittObj.thrConfInMsg.subscribeTo(fswThrConfigMsg)
-    thrFiringSchmittObj.thrForceInMsg.subscribeTo(ros_bridge.bskSat.THRArrayCmdForceMsgOut)
+    thrFiringSchmittObj.thrForceInMsg.subscribeTo(ros_bridge.bskSat0.THRArrayCmdForceMsgOut)
     thrusterSet.cmdsInMsg.subscribeTo(thrFiringSchmittObj.onTimeOutMsg)
 
     # Add models to simulation tasks
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     run(
         liveStream=False,
         broadcastStream=True,
-        simTimeStep=1/50.,
+        simTimeStep=1/100.,
         simTime=3600.0,
         accelFactor=5.0,
         fswTimeStep=1/10.
