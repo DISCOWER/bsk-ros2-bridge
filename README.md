@@ -4,7 +4,7 @@ A ROS2 package that bridges the [Basilisk astrodynamics simulator](https://hansp
 
 ## Components
 
-- **Bridge Node** (`bsk_ros_bridge.py`) - ROS2 node that handles ZMQ<->ROS2 message conversion
+- **Bridge Node** (`bsk_ros2_bridge.py`) - ROS2 node that handles ZMQ<->ROS2 message conversion
 - **Handler Module** (`bsk_module/rosBridgeHandler.py`) - Basilisk module for scenario integration
 - **Example Scenarios** - Four example configurations demonstrating single/multi-spacecraft control
 
@@ -22,14 +22,14 @@ source install/setup.bash
 
 # Install this package
 cd your_ros2_workspace/src
-git clone https://github.com/Thomas-Chan-2019/bsk_ros_bridge.git bsk_ros_bridge
+git clone https://github.com/Thomas-Chan-2019/bsk_ros2_bridge.git bsk_ros2_bridge
 cd ..
-colcon build --packages-select bsk_ros_bridge
+colcon build --packages-select bsk_ros2_bridge
 source install/setup.bash
 
 # Install required packages from `requirements.txt`
 # This snippet has to be run as GLOBAL pip installation, it might not work within virtual environments (e.g., python venv, conda env).
-cd your_ros2_workspace/src/bsk_ros_bridge
+cd your_ros2_workspace/src/bsk_ros2_bridge
 pip install -r requirements.txt
 
 ```
@@ -38,14 +38,14 @@ pip install -r requirements.txt
 
 ```bash
 # Terminal 1: Start bridge
-ros2 launch bsk_ros_bridge bridge.launch.py
+ros2 launch bsk_ros2_bridge bridge.launch.py
 
 # Terminal 2: Start Basilisk simulation (requires BSK environment)
 source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosBasic_TH.py
 
 # Terminal 3: Start controller (uses default namespace 'bskSat')
-ros2 run bsk_ros_bridge example_data_processor --ros-args -p mode:=da
+ros2 run bsk_ros2_bridge example_data_processor --ros-args -p mode:=da
 ```
 
 ## Examples
@@ -75,8 +75,8 @@ source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosFormation_TH.py
 
 # Control each spacecraft separately
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat0 -p mode:=da
-ros2 run bsk_ros_bridge example_data_processor --ros-args -r __ns:=/bskSat1 -p mode:=da
+ros2 run bsk_ros2_bridge example_data_processor --ros-args -r __ns:=/bskSat0 -p mode:=da
+ros2 run bsk_ros2_bridge example_data_processor --ros-args -r __ns:=/bskSat1 -p mode:=da
 ```
 
 ### Time Synchronization
@@ -146,7 +146,7 @@ Default ZMQ ports: 5550 (Basilisk->Bridge), 5551 (Bridge->Basilisk), 5552 (heart
 
 **Custom ports:**
 ```bash
-ros2 launch bsk_ros_bridge bridge.launch.py sub_port:=6550 pub_port:=6551 heartbeat_port:=6552
+ros2 launch bsk_ros2_bridge bridge.launch.py sub_port:=6550 pub_port:=6551 heartbeat_port:=6552
 ```
 
 ```python
