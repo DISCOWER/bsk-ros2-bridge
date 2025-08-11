@@ -54,7 +54,7 @@ class BskRosBridge(Node):
     _topic_name_cache = {}     # Topic name conversions (camelCase -> snake_case)
 
     def __init__(self, sub_port=DEFAULT_SUB_PORT, pub_port=DEFAULT_PUB_PORT, heartbeat_port=DEFAULT_HEARTBEAT_PORT):
-        super().__init__('bsk_ros_bridge')
+        super().__init__('bsk_ros2_bridge')
         
         # Threading control
         self.stop_event = threading.Event()

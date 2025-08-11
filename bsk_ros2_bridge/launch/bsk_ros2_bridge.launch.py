@@ -31,8 +31,8 @@ def generate_launch_description():
 
     # Main bridge node - handles all BSK<->ROS2 message translation
     bridge_node = Node(
-        package='bsk_ros_bridge',
-        executable='bsk_ros_bridge',
+        package='bsk_ros2_bridge',
+        executable='bsk_ros2_bridge',
         output='screen',
         parameters=[{
             'use_sim_time': False,  # BSK manages its own simulation time

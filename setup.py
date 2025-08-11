@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 from glob import glob
 import os
 
-package_name = 'bsk_ros_bridge'
+package_name = 'bsk_ros2_bridge'
 
 setup(
     name=package_name,
@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'bsk_ros_bridge = bsk_ros_bridge.bsk_ros_bridge:main',
+            'bsk_ros2_bridge = bsk_ros2_bridge.bsk_ros2_bridge:main',
             'example_data_processor = examples.ex_data_processor:main',
         ],
     },
