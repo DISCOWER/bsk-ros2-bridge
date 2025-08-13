@@ -1,25 +1,20 @@
-import os
-from Basilisk import __path__
-from Basilisk.simulation import spacecraft, thrusterDynamicEffector
-from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
-from Basilisk.fswAlgorithms import thrFiringSchmitt, forceTorqueThrForceMapping, hillStateConverter, hillPoint, attTrackingError
-from Basilisk.simulation import simSynch, simpleNav
-from Basilisk.architecture import messaging, bskLogging, sysModel
-try:
-    from Basilisk.simulation import vizInterface
-except ImportError:
-    pass
-
-import sys, inspect
+import sys, inspect, os
 current_frame = inspect.currentframe()
 if current_frame is not None:
     filename = inspect.getframeinfo(current_frame).filename
 else:
     filename = __file__
 path = os.path.dirname(os.path.abspath(filename))
-# Add the parent directory to the path to access bsk_module
 sys.path.append(os.path.join(path, '..'))
+
 from bsk_module.rosBridgeHandler import RosBridgeHandler
+from Basilisk import __path__
+from Basilisk.simulation import spacecraft, thrusterDynamicEffector
+from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
+from Basilisk.fswAlgorithms import thrFiringSchmitt, forceTorqueThrForceMapping
+from Basilisk.simulation import simSynch
+from Basilisk.architecture import messaging, bskLogging, sysModel
+from Basilisk.simulation import vizInterface
 
 def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
     # Set up simulation classes and processes
@@ -44,10 +39,13 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
 
     # Initial positions for formation (relative to base orbit)
     relative_positions = [
-        [0, 0, 0],
-        [-3, 0, 0],
+        [1.5, 0, 0],
+        [0.5, -0.3, 0],
+        [0.5, 0.3, 0],
     ]
     num_spacecraft = len(relative_positions)
+
+    scName = ['leaderSc', 'followerSc_1', 'followerSc_2']
 
     # Define thrusters
     thruster_defs = [
@@ -76,7 +74,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     for i in range(num_spacecraft):
         # Create spacecraft
         scObject_i = spacecraft.Spacecraft()
-        scObject_i.ModelTag = f"bskSat{i}"
+        scObject_i.ModelTag = scName[i]
         scObject_i.hub.mHub = m
         scObject_i.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
         scObject_i.hub.r_CN_NInit = relative_positions[i]  # m
@@ -93,8 +91,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
                 loc,
                 dir,
                 MaxThrust=1.5,
-                cutoffFrequency=3141.6, # 500 Hz
-                MinOnTime=0.001,
+                cutoffFrequency=63.83,
+                MinOnTime=1e-3,
             )
         thFactory_i.addToSpacecraft(f"ThrusterDynamics{i}", thrusterSet_i, scObject_i)
         thFactory.append(thFactory_i)
@@ -116,7 +114,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         # Setup the Schmitt trigger thruster firing logic module
         thrFiringSchmittObj_i = thrFiringSchmitt.thrFiringSchmitt()
         thrFiringSchmittObj_i.ModelTag = f"thrFiringSchmitt{i}"
-        thrFiringSchmittObj_i.thrMinFireTime = 0.001
+        thrFiringSchmittObj_i.thrMinFireTime = 1e-3
         thrFiringSchmittObj_i.level_on = 0.95
         thrFiringSchmittObj_i.level_off = 0.05
         thrFiringSchmittObj.append(thrFiringSchmittObj_i)
@@ -198,8 +196,8 @@ if __name__ == "__main__":
     run(
         liveStream=False,
         broadcastStream=True,
-        simTimeStep=1/50.,
+        simTimeStep=1/100.,
         simTime=3600.0,
-        accelFactor=5.0,
+        accelFactor=1.0,
         fswTimeStep=1/10.
     )

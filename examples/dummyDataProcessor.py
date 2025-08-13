@@ -7,14 +7,14 @@ from bsk_msgs.msg import CmdForceBodyMsgPayload, CmdTorqueBodyMsgPayload, SCStat
 class BasiliskDataProcessor(Node):
     def __init__(self):
         super().__init__("bsk_data_processor", 
-                        namespace='bskSat',
+                        namespace='bskSat0',
                         parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)])
         
         # Get the namespace
         self.namespace = self.get_namespace()
         
         # Declare ROS2 parameter for thruster mode (direct allocation or wrench)
-        self.declare_parameter('mode', 'direct_allocation')
+        self.declare_parameter('mode', 'da')
         self.mode = self.get_parameter('mode').get_parameter_value().string_value
         
         self.get_logger().info(f"Starting BasiliskDataProcessor for namespace: {self.namespace}")
@@ -30,7 +30,7 @@ class BasiliskDataProcessor(Node):
         self.get_logger().info(f"Subscribed to: {self.namespace}/bsk/out/sc_states")
         
         # Publishers - Send commands to Basilisk input topics
-        if self.mode == 'direct_allocation':
+        if self.mode == 'da':
             self.force_pub = self.create_publisher(
                 THRArrayCmdForceMsgPayload, 
                 "bsk/in/thr_array_cmd_force", 
@@ -48,7 +48,7 @@ class BasiliskDataProcessor(Node):
                 10
             )
         else:
-            self.get_logger().error(f"Unknown mode: {self.mode}. Use 'direct_allocation' or 'wrench'.")
+            self.get_logger().error(f"Unknown mode: {self.mode}. Use 'da' or 'wrench'.")
             return
 
         # Check if use_sim_time is enabled
@@ -73,14 +73,14 @@ class BasiliskDataProcessor(Node):
             rate.sleep()
 
     def state_callback(self, msg: SCStatesMsgPayload):
-        """Process received spacecraft state - implement your control logic here."""
+        """ Process received spacecraft state """
         pos = msg.r_bn_n
         vel = msg.v_bn_n
         att = msg.sigma_bn
         omega = msg.omega_bn_b
 
     def cmd_callback(self):
-        if self.mode == 'direct_allocation':
+        if self.mode == 'da':
             # Create a THRArrayCmdForceMsgPayload message for 12 thrusters
             force_msg = THRArrayCmdForceMsgPayload()
             force_msg.stamp = self.get_clock().now().to_msg()
@@ -88,9 +88,6 @@ class BasiliskDataProcessor(Node):
             # Set thruster force values (0-1.5 N for each of 12 thrusters)
             for i in range(12):
                 force_msg.thrforce[i] = np.random.uniform(0.0, 1.5)
-            # force_msg.thrforce[0] = 0.75
-            # force_msg.thrforce[2] = 0.75
-            # force_msg.thrforce[3] = 0*0.25
 
             # Publish the messages
             self.force_pub.publish(force_msg)
@@ -130,7 +127,7 @@ class BasiliskDataProcessor(Node):
                 f"T=[{torque_msg.torquerequestbody[0]:.2f}, {torque_msg.torquerequestbody[1]:.2f}, {torque_msg.torquerequestbody[2]:.2f}] Nm"
             )
         else:
-            self.get_logger().error(f"Unknown mode: {self.mode}. Use 'direct_allocation' or 'wrench'.")
+            self.get_logger().error(f"Unknown mode: {self.mode}. Use 'da' or 'wrench'.")
 
 def main():
     rclpy.init()

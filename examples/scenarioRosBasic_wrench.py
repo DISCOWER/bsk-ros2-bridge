@@ -1,25 +1,20 @@
-import os
-from Basilisk import __path__
-from Basilisk.simulation import spacecraft, thrusterDynamicEffector
-from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
-from Basilisk.fswAlgorithms import thrFiringSchmitt, forceTorqueThrForceMapping
-from Basilisk.simulation import simSynch
-from Basilisk.architecture import messaging, bskLogging, sysModel
-try:
-    from Basilisk.simulation import vizInterface
-except ImportError:
-    pass
-
-import sys, inspect
+import sys, inspect, os
 current_frame = inspect.currentframe()
 if current_frame is not None:
     filename = inspect.getframeinfo(current_frame).filename
 else:
     filename = __file__
 path = os.path.dirname(os.path.abspath(filename))
-# Add the parent directory to the path to access bsk_module
 sys.path.append(os.path.join(path, '..'))
+
 from bsk_module.rosBridgeHandler import RosBridgeHandler
+from Basilisk import __path__
+from Basilisk.simulation import spacecraft, thrusterDynamicEffector
+from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
+from Basilisk.fswAlgorithms import thrFiringSchmitt, forceTorqueThrForceMapping
+from Basilisk.simulation import simSynch
+from Basilisk.architecture import messaging, bskLogging, sysModel
+from Basilisk.simulation import vizInterface
 
 def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
     # Set up simulation classes and processes
@@ -75,8 +70,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
             loc,
             dir,
             MaxThrust=1.5,
-            cutoffFrequency=3141.6, # 500 Hz
-            MinOnTime=0.001,
+            cutoffFrequency=63.83,
+            MinOnTime=1e-3,
         )
     thFactory.addToSpacecraft("ThrusterDynamics", thrusterSet, scObject)
     fswThrConfigMsg = fswSetupThrusters.writeConfigMessage()
@@ -95,7 +90,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     # Setup the Schmitt trigger thruster firing logic module
     thrFiringSchmittObj = thrFiringSchmitt.thrFiringSchmitt()
     thrFiringSchmittObj.ModelTag = "thrFiringSchmitt"
-    thrFiringSchmittObj.thrMinFireTime = 0.001
+    thrFiringSchmittObj.thrMinFireTime = 1e-3
     thrFiringSchmittObj.level_on = 0.95
     thrFiringSchmittObj.level_off = 0.05
 
