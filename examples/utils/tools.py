@@ -12,10 +12,12 @@ def get_initial_conditions_from_hill(mu, rN, vN, r_hill, v_hill):
         r (np.ndarray): Position vector in the inertial frame.
         v (np.ndarray): Velocity vector in the inertial frame.
     """
+    # Ensure input vectors are numpy arrays
     rN = np.array(rN)
     vN = np.array(vN)
     r_hill = np.array(r_hill)
     v_hill = np.array(v_hill)
+    
     # Rotation matrix from Hill frame to inertial frame
     r_hat = rN/np.linalg.norm(rN)
     h_vec = np.cross(rN, vN)

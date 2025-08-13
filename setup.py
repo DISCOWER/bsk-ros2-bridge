@@ -1,17 +1,18 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 from glob import glob
 import os
 
-package_name = 'bsk_ros2_bridge'
+package_name = 'bsk-ros2-bridge'
+package_dir = 'bsk_ros2_bridge'
 
 setup(
     name=package_name,
     version='0.1.0',
-    packages=[package_name, 'examples'],
+    packages=[package_dir, 'examples'],
     data_files=[
         ('share/ament_index/resource_index/packages', [f'resource/{package_name}']),
         (f'share/{package_name}', ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob(package_name +'/launch/*.launch.py')),
+        (os.path.join('share', package_name, 'launch'), glob(package_dir +'/launch/*.launch.py')),
     ],
     install_requires=['setuptools', 'pyzmq', 'orjson'],
     zip_safe=True,
@@ -24,8 +25,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'bsk_ros2_bridge = bsk_ros2_bridge.bsk_ros2_bridge:main',
-            'example_data_processor = examples.ex_data_processor:main',
+            'bsk-ros2-bridge = bsk_ros2_bridge.bsk_ros2_bridge:main',
+            'dummy-data-processor = examples.dummyDataProcessor:main',
         ],
     },
 )

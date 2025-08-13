@@ -1,1 +1,1 @@
-# Examples package for bsk_ros2_bridge
+# Examples package for bsk-ros2-bridge
