@@ -2,13 +2,40 @@
 
 A ROS2 package that bridges the [Basilisk astrodynamics simulator](https://hanspeterschaub.info/basilisk/) with ROS 2, enabling real-time spacecraft simulation and control. Uses ZeroMQ for high-performance, low-latency communication.
 
+It is **HIGHLY RECOMMENDED** to go through the [**Quick Start**](#quick-start) section **BEFORE CLONING** this repository.
+
 ## Components
 
 - **Bridge Node** (`bsk-ros2-bridge.py`) - ROS 2 node that handles ZMQ<->ROS2 message conversion
 - **Handler Module** (`bsk_module/rosBridgeHandler.py`) - Basilisk module for scenario integration
 - **Example Scenarios** - Four example configurations demonstrating single/multi-spacecraft control
 
+## Tested Configurations
+
+This package has been successfully built and exercised on the following configurations:
+
+| Environment                                | ROS 2 Distro             | Basilisk Build  | Details & Notes                                                     |
+|--------------------------------------------|--------------------------|-----------------|----------------------------------------------------------------------|
+| Ubuntu 22.04 LTS                           | ROS 2 Humble             | Linux           | Native desktop─full build, CLI tools, and launch files tested        |
+| Windows (via WSL, Ubuntu 24.04)            | ROS 2 Rolling            | Linux           | Runs within WSL; build, topic communication, and launch verified     |
+
+**Known limitations**  
+- WSL environment requires correction for ROS 2 on [locale settings, e.g. from ROS 2 Rolling](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html#set-locale).
+- Minor latency observed with GUI tools (e.g., BSK-Vizard) over WSL; CLI tools operate normally.  
+
 ## Quick Start
+
+### 0. Software Pre-requisites
+Both **Basilisk** and **ROS 2** are required to be installed prior to running this package. Details on corresponding installation guides can be found from:
+- [**Basilisk**](https://avslab.github.io/basilisk/Install.html)
+- **ROS 2**: 
+    - [ROS 2 Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)
+    - [ROS 2 Rolling](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html)
+
+After installation of **Basilisk**, it is recommended to export the user path of Basilisk to `.bashrc` as:
+```bash
+export BSK_PATH=your_BSK_path
+```
 
 ### 1. Install Dependencies
 
