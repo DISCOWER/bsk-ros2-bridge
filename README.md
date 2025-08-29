@@ -2,8 +2,6 @@
 
 A ROS2 package that bridges the [Basilisk astrodynamics simulator](https://hanspeterschaub.info/basilisk/) with ROS 2, enabling real-time spacecraft simulation and control. Uses ZeroMQ for high-performance, low-latency communication.
 
-It is **HIGHLY RECOMMENDED** to go through the [**Quick Start**](#quick-start) section **BEFORE CLONING** this repository.
-
 ## Components
 
 - **Bridge Node** (`bsk-ros2-bridge.py`) - ROS 2 node that handles ZMQ<->ROS2 message conversion
@@ -17,6 +15,7 @@ This package has been successfully built and exercised on the following configur
 | Environment                                | ROS 2 Distro             | Basilisk Build  | Details & Notes                                                     |
 |--------------------------------------------|--------------------------|-----------------|----------------------------------------------------------------------|
 | Ubuntu 22.04 LTS                           | ROS 2 Humble             | Linux           | Native desktop─full build, CLI tools, and launch files tested        |
+| Ubuntu 24.04 LTS                           | ROS 2 Jazzy              | Linux           | Native desktop─full build, CLI tools, and launch files tested        |
 | Windows (via WSL, Ubuntu 24.04)            | ROS 2 Rolling            | Linux           | Runs within WSL; build, topic communication, and launch verified     |
 
 **Known limitations**  
