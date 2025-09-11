@@ -37,7 +37,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     mu = planet.mu
     oe = orbitalMotion.ClassicElements()
     oe.a = (6378 + 700) * 1000 # m, Semi-major axis
-    oe.e = 0.001
+    oe.e = 0*0.001
     oe.i = 0*45 * macros.D2R
     oe.Omega = 270 * macros.D2R
     oe.omega = 90 * macros.D2R
@@ -121,8 +121,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
                 loc,
                 dir,
                 MaxThrust=1.5,
-                cutoffFrequency=3141.6, # 500 Hz
-                MinOnTime=0.001,
+                cutoffFrequency=63.83,
+                MinOnTime=1e-6,
             )
         thFactory_i.addToSpacecraft(f"ThrusterDynamics{i}", thrusterSet_i, scObject_i)
         thFactory.append(thFactory_i)
@@ -146,9 +146,9 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         # Setup the Schmitt trigger thruster firing logic module
         thrFiringSchmittObj_i = thrFiringSchmitt.thrFiringSchmitt()
         thrFiringSchmittObj_i.ModelTag = f"thrFiringSchmitt{i}"
-        thrFiringSchmittObj_i.thrMinFireTime = 0.001
-        thrFiringSchmittObj_i.level_on = 0.95
-        thrFiringSchmittObj_i.level_off = 0.05
+        thrFiringSchmittObj_i.thrMinFireTime = 1e-6
+        thrFiringSchmittObj_i.level_on = 0.98
+        thrFiringSchmittObj_i.level_off = 0.02
         thrFiringSchmittObj.append(thrFiringSchmittObj_i)
 
         # Navigation modules with proper priorities to avoid NavTransMsg errors
@@ -239,14 +239,14 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         clockSync.accelFactor = accelFactor
         scSim.AddModelToTask(simTaskName, clockSync)
         
-        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, [scObjectHill] + scObject,
-                              thrEffectorList=thrEffectorList,
+        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject,
+                            #   thrEffectorList=thrEffectorList,
                               liveStream=liveStream,
                               broadcastStream=broadcastStream)
-        vizSupport.createCustomModel(viz,
-                                    simBodiesToModify=[scObjectHill.ModelTag],
-                                    modelPath='SPHERE',
-                                    scale=[0.1]*3)
+        # vizSupport.createCustomModel(viz,
+        #                             simBodiesToModify=[scObjectHill.ModelTag],
+        #                             modelPath='SPHERE',
+        #                             scale=[0.1]*3)
         for scObject_i in scObject:
             vizSupport.createCustomModel(viz,
                                         simBodiesToModify=[scObject_i.ModelTag],
@@ -271,5 +271,5 @@ if __name__ == "__main__":
         simTimeStep=1/200.,
         simTime=3600.0,
         accelFactor=1.0,
-        fswTimeStep=1/50.
+        fswTimeStep=1/20.
     )
