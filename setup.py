@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'bsk-ros2-bridge = bsk_ros2_bridge.bsk_ros2_bridge:main',
             'dummy-data-processor = examples.dummyDataProcessor:main',
+            'stresstest_node = examples.stresstest_node:main',
         ],
     },
 )

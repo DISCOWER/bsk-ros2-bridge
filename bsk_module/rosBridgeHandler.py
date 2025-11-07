@@ -64,7 +64,7 @@ class RosBridgeHandler(sysModel.SysModel):
     _bsk_attrs_cache = {}
 
     def __init__(self, ModelTag="ros_bridge", send_port=5550, receive_port=5551, 
-                 heartbeat_port=5552):
+                 heartbeat_port=5552, accelFactor=1.0):
         """
         Initialize ROS Bridge Handler.
 
@@ -73,8 +73,12 @@ class RosBridgeHandler(sysModel.SysModel):
             send_port (int): ZMQ port for sending data to bridge (BSK -> ROS2)
             receive_port (int): ZMQ port for receiving data from bridge (ROS2 -> BSK)
             heartbeat_port (int): ZMQ port for heartbeat monitoring
+            accelFactor (float): Simulation speed factor for time synchronization
         """
         super(RosBridgeHandler, self).__init__()
+        
+        # Simulation speed for time synchronization
+        self.accelFactor = float(accelFactor)
 
         # Configuration
         self.ModelTag = ModelTag
@@ -91,7 +95,10 @@ class RosBridgeHandler(sysModel.SysModel):
         self.confirmed_topics = set()
         
         # Pre-allocate commonly used objects to reduce allocations
-        self._sim_time_msg_template = {"sim_time": 0.0}
+        self._sim_time_msg_template = {
+            "sim_time": 0.0,
+            "accelFactor": self.accelFactor
+        }
         # Pre-serialize for better performance
         self._topic_request_template = {
             "topic_request": True,
@@ -219,7 +226,35 @@ class RosBridgeHandler(sysModel.SysModel):
         
         while self.last_heartbeat_time is None:
             time.sleep(0.01)
-            
+        
+        # Send reset signal to bridge
+        reset_msg = {
+            "clock_reset": True,
+            "sim_time": 0.0,
+            "accelFactor": self.accelFactor
+        }
+        clock_reset = False
+        
+        print(f"[{self.ModelTag}] Waiting for clock reset acknowledgement...")
+        
+        while not clock_reset:
+            try:
+                # Send reset request
+                self.send_socket.send(json_dumps(reset_msg), flags=zmq.NOBLOCK)
+                
+                # Try to receive acknowledgement with timeout
+                msg_bytes = self.receive_socket.recv()
+                msg = json_loads(msg_bytes)
+                if msg.get('clock_reset_ack', False):
+                    clock_reset = True
+                    print(f"[{self.ModelTag}] Bridge clock reset acknowledged")
+            except zmq.Again:
+                # If no message received within timeout, sleep and retry
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"[{self.ModelTag}] Error during clock reset: {e}")
+                time.sleep(0.5)
+        
         print(f"[{self.ModelTag}] Bridge heartbeat detected. Module ready.")
 
     # =========================================================================
@@ -570,8 +605,7 @@ class RosBridgeHandler(sysModel.SysModel):
     def _publish_sim_time(self, CurrentSimNanos):
         """Publish simulation time for ROS2 synchronization."""
         try:
-            # Reuse pre-allocated template for better performance
-            self._sim_time_msg_template["sim_time"] = CurrentSimNanos * 1.0E-9
+            self._sim_time_msg_template["sim_time"] = float(CurrentSimNanos) * 1e-9
             self.send_socket.send(json_dumps(self._sim_time_msg_template), flags=zmq.NOBLOCK)
         except Exception as e:
             self._log_error(f"Error publishing sim_time: {e}")
