@@ -1,10 +1,12 @@
-# Basilisk-ROS2 Bridge
+# Basilisk-ROS 2 Bridge
 
-A ROS2 package that bridges the [Basilisk astrodynamics simulator](https://hanspeterschaub.info/basilisk/) with ROS 2, enabling real-time spacecraft simulation and control. Uses ZeroMQ for high-performance, low-latency communication.
+A ROS 2 package that bridges the [Basilisk astrodynamics simulator](https://hanspeterschaub.info/basilisk/) with ROS 2, enabling real-time spacecraft simulation and control. Uses ZeroMQ for high-performance, low-latency communication.
+
+![bsk_bridge_rviz_demo_compressed](https://github.com/user-attachments/assets/11cca7af-d8b4-443f-aed6-494e996d0d6c)
 
 ## Components
 
-- **Bridge Node** (`bsk-ros2-bridge.py`) - ROS 2 node that handles ZMQ<->ROS2 message conversion
+- **Bridge Node** (`bsk-ros2-bridge.py`) - ROS 2 node that handles ZMQ<->ROS 2 message conversion
 - **Handler Module** (`bsk_module/rosBridgeHandler.py`) - Basilisk module for scenario integration
 - **Example Scenarios** - Four example configurations demonstrating single/multi-spacecraft control
 
@@ -39,7 +41,7 @@ export BSK_PATH=your_BSK_path
 ### 1. Install Dependencies
 
 ```bash
-# Install custom ROS2 messages
+# Install custom ROS 2 messages
 cd your_ros2_workspace/src
 git clone https://github.com/DISCOWER/bsk-msgs.git
 cd ..
@@ -127,10 +129,10 @@ from bsk_module.rosBridgeHandler import RosBridgeHandler
 ros_bridge = RosBridgeHandler()
 ros_bridge.ModelTag = "ros_bridge"
 
-# Add publishers (Basilisk -> ROS2)
+# Add publishers (Basilisk -> ROS 2)
 ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat')
 
-# Add subscribers (ROS2 -> Basilisk)  
+# Add subscribers (ROS 2 -> Basilisk)  
 ros_bridge.add_ros_subscriber('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgOut', 'thr_array_cmd_force', 'bskSat')
 
 # Connect to Basilisk messages
@@ -144,17 +146,17 @@ scSim.AddModelToTask(simTaskName, ros_bridge)
 ### Method Signatures
 
 ```python
-# Publisher: Sends Basilisk data to ROS2
+# Publisher: Sends Basilisk data to ROS 2
 ros_bridge.add_ros_publisher(msg_type_name, handler_name, topic_name, namespace)
 
-# Subscriber: Receives ROS2 commands in Basilisk
+# Subscriber: Receives ROS 2 commands in Basilisk
 ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace)
 ```
 
 **Parameters:**
 - `msg_type_name` - Basilisk message type (e.g., `'SCStatesMsgPayload'`, `'CmdForceBodyMsgPayload'`)
 - `handler_name` - Internal message handler (e.g., `'SCStatesMsgIn'`, `'CmdForceBodyMsgOut'`)
-- `topic_name` - ROS2 topic name (e.g., `'sc_states'`, `'cmd_force'`)
+- `topic_name` - ROS 2 topic name (e.g., `'sc_states'`, `'cmd_force'`)
 - `namespace` - Spacecraft identifier (e.g., `'bskSat'`, `'bskSat0'`)
 
 ### Topic Structure
@@ -183,9 +185,9 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 
 ## Features
 
-- **Dynamic Namespace Support** - Automatically creates ROS2 topics for multiple spacecraft
+- **Dynamic Namespace Support** - Automatically creates ROS 2 topics for multiple spacecraft
 - **Real-time Communication** - Optimized for low-latency spacecraft control
-- **Heartbeat Monitoring** - Ensures connection health between Basilisk and ROS2
+- **Heartbeat Monitoring** - Ensures connection health between Basilisk and ROS 2
 - **Automatic Topic Creation** - Bridge discovers and creates topics based on Basilisk messages
 - **Context Manager Support** - Automatic resource cleanup on shutdown
 - **Custom Message Types** - Uses `bsk_msgs` package that mirrors Basilisk's internal message structure
