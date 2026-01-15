@@ -14,6 +14,7 @@ import orjson  # Faster JSON processing than standard json
 import inspect
 import re
 import time
+import numpy as np
 
 # =============================================================================
 # COMMUNICATION CONFIGURATION
@@ -22,6 +23,7 @@ DEFAULT_SUB_PORT = 5550              # Receive telemetry from Basilisk
 DEFAULT_PUB_PORT = 5551              # Send commands to Basilisk  
 DEFAULT_HEARTBEAT_PORT = 5552        # Connection health monitoring
 HEARTBEAT_INTERVAL_SEC = 0.1         # Keep-alive frequency
+DEFAULT_ROS_CLOCK_TIMESTEP = 0.01    # Default ROS clock update interval
 
 # =============================================================================
 # PERFORMANCE OPTIMIZATIONS
@@ -53,31 +55,52 @@ class BskRosBridge(Node):
     _field_mapping_cache = {}  # Message field name mappings (lowercase lookup)
     _topic_name_cache = {}     # Topic name conversions (camelCase -> snake_case)
 
-    def __init__(self, sub_port=DEFAULT_SUB_PORT, pub_port=DEFAULT_PUB_PORT, heartbeat_port=DEFAULT_HEARTBEAT_PORT):
+    def __init__(self):
         super().__init__('bsk_ros2_bridge')
         
         # Threading control
         self.stop_event = threading.Event()
         
         # Port configuration - allows runtime override via ROS parameters
-        self._setup_parameters(sub_port, pub_port, heartbeat_port)
+        self._setup_parameters()
         
         # Communication infrastructure
         self.bridge_publishers = {}   # namespace -> {topic_name -> {publisher, type}}
         self.bridge_subscribers = {}  # namespace -> {topic_name -> subscriber}
         self.zmq_context = zmq.Context()
         
+        # Clock synchronization
+        self._current_sim_time = 0.0
+        self._last_published_time = 0.0  # Track last published simulation time
+        self._accelFactor = 1.0
+        self._last_clock_update = self.get_clock().now()
+        
         # Message type discovery and caching
         self._bsk_msg_types = {}      # BSK message type registry
         self._clock_msg = Clock()  # Pre-allocated for performance
+
+        # QoS profiles
+        self.pub_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            durability=rclpy.qos.DurabilityPolicy.VOLATILE,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self.sub_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            durability=rclpy.qos.DurabilityPolicy.VOLATILE,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
         
         # Initialize bridge components
         self._discover_bsk_message_types()
         self._setup_zmq_communication()
         self._start_background_threads()
         
-        # Special topic for simulation time synchronization
-        self.clock_pub = self.create_publisher(Clock, '/clock', 10)
+        # Special topic for simulation time synchronization (if not realtime)
+        self.clock_pub = None
+        self.clock_timer = None
         
         self.get_logger().info(
             f"BSK-ROS2 Bridge ready on ports {self.sub_port}/{self.pub_port}/{self.heartbeat_port}"
@@ -87,15 +110,17 @@ class BskRosBridge(Node):
     # INITIALIZATION METHODS
     # =========================================================================
     
-    def _setup_parameters(self, sub_port, pub_port, heartbeat_port):
+    def _setup_parameters(self):
         """Configure ROS parameters for port settings."""
-        self.declare_parameter('sub_port', sub_port)
-        self.declare_parameter('pub_port', pub_port)
-        self.declare_parameter('heartbeat_port', heartbeat_port)
+        self.declare_parameter('sub_port', DEFAULT_SUB_PORT)
+        self.declare_parameter('pub_port', DEFAULT_PUB_PORT)
+        self.declare_parameter('heartbeat_port', DEFAULT_HEARTBEAT_PORT)
+        self.declare_parameter('ros_clock_timestep', DEFAULT_ROS_CLOCK_TIMESTEP)
 
         self.sub_port = self.get_parameter('sub_port').get_parameter_value().integer_value
         self.pub_port = self.get_parameter('pub_port').get_parameter_value().integer_value
         self.heartbeat_port = self.get_parameter('heartbeat_port').get_parameter_value().integer_value
+        self.ros_clock_timestep = self.get_parameter('ros_clock_timestep').get_parameter_value().double_value
 
     def _discover_bsk_message_types(self):
         """
@@ -269,6 +294,19 @@ class BskRosBridge(Node):
                 # Handle unified topic requests from BSK
                 if data.get('topic_request', False):
                     self._handle_topic_request(data)
+                elif data.get('clock_reset', False):
+                    # Reset clock when a new handler initializes
+                    self._current_sim_time = float(data.get('sim_time', 0.0))
+                    self._last_published_time = self._current_sim_time
+                    self._accelFactor = float(data.get('accelFactor', 1.0))
+                    self.get_logger().info("Clock reset by new RosBridgeHandler")
+                    # Send acknowledgement
+                    ack = {
+                        "clock_reset_ack": True,
+                        "sim_time": self._current_sim_time,
+                        "accelFactor": self._accelFactor
+                    }
+                    self.pub_socket.send(json_dumps(ack), flags=zmq.NOBLOCK)
                 elif 'sim_time' in data:
                     self._handle_sim_time_update(data)
                 else:
@@ -293,7 +331,41 @@ class BskRosBridge(Node):
         """Handle simulation time synchronization from BSK."""
         sim_time = data['sim_time']
         if sim_time is not None:
-            # Convert simulation time (seconds) to ROS Clock message
+            self._current_sim_time = float(sim_time)
+            new_accel_factor = float(data.get('accelFactor', 1.0))
+            
+            # Check if accelFactor changed from/to realtime (NaN or close to 1.0)
+            old_is_realtime = not np.isfinite(self._accelFactor) or np.isclose(self._accelFactor, 1.0, rtol=1e-6)
+            new_is_realtime = not np.isfinite(new_accel_factor) or np.isclose(new_accel_factor, 1.0, rtol=1e-6)
+            accel_factor_changed = (old_is_realtime != new_is_realtime) or (not new_is_realtime and self._accelFactor != new_accel_factor)
+            self._accelFactor = new_accel_factor
+            
+            # Only manage clock publisher if not realtime (accelFactor is not NaN and not close to 1.0)
+            if np.isfinite(self._accelFactor) and not np.isclose(self._accelFactor, 1.0, rtol=1e-6):
+                # Initialize clock publisher if it doesn't exist
+                if self.clock_pub is None:
+                    self.clock_pub = self.create_publisher(Clock, '/clock', qos_profile=self.pub_qos)
+                    self.get_logger().info("Created /clock publisher for non-realtime simulation")
+                
+                # Start or update clock timer
+                if self.clock_timer is None or accel_factor_changed:
+                    if self.clock_timer is not None:
+                        self.clock_timer.cancel()
+                    self._start_clock_timer()
+            else:
+                # Destroy clock publisher and timer if accelFactor is NaN (realtime)
+                if self.clock_pub is not None:
+                    self.destroy_publisher(self.clock_pub)
+                    self.clock_pub = None
+                    self.get_logger().info("Destroyed /clock publisher for realtime simulation")
+                
+                if self.clock_timer is not None:
+                    self.clock_timer.cancel()
+                    self.clock_timer = None
+            
+    def _update_ros_clock(self, sim_time):
+        """Update ROS clock with the given simulation time."""
+        if self.clock_pub is not None:
             self._clock_msg.clock.sec = int(sim_time)
             self._clock_msg.clock.nanosec = int((sim_time - int(sim_time)) * 1e9)
             self.clock_pub.publish(self._clock_msg)
@@ -322,8 +394,8 @@ class BskRosBridge(Node):
             
             # Create publisher on first message
             if topic_name not in self.bridge_publishers[namespace]:
-                msg_type = self._bsk_msg_types[msg_type_name]
-                publisher = self.create_publisher(msg_type, full_topic_name, 10)
+                msg_type = self._bsk_msg_types[msg_type_name]                
+                publisher = self.create_publisher(msg_type, full_topic_name, self.pub_qos)
                 self.bridge_publishers[namespace][topic_name] = {
                     'publisher': publisher,
                     'type': msg_type
@@ -336,7 +408,7 @@ class BskRosBridge(Node):
             pub_info['publisher'].publish(bsk_msg)
             
         except Exception:
-            pass  # Silent failure to avoid log spam on bad messages
+            pass
 
     def _handle_topic_request(self, data):
         """
@@ -392,14 +464,8 @@ class BskRosBridge(Node):
                     return callback
                 
                 try:
-                    subscriber = self.create_subscription(
-                        msg_type,
-                        full_topic_name,
-                        create_callback(msg_type_name, namespace),
-                        10
-                    )
-                    
-                    self.bridge_subscribers[namespace][topic_name] = subscriber
+                    self.bridge_subscribers[namespace][topic_name] = self.create_subscription(
+                        msg_type, full_topic_name, create_callback(msg_type_name, namespace), self.sub_qos)
                     self.get_logger().info(f"Confirmed BSK subscriber: {full_topic_name} ({msg_type_name})")
                     return True
                     
@@ -450,6 +516,28 @@ class BskRosBridge(Node):
             self.get_logger().debug(f"Sent {action} confirmation for {request_id}")
         except Exception as e:
             self.get_logger().error(f"Failed to send topic confirmation: {e}")
+
+    def _start_clock_timer(self):
+        """Initialize and start the clock update timer."""
+        # Only start clock timer if not realtime (accelFactor is not NaN and not close to 1.0)
+        if np.isfinite(self._accelFactor) and not np.isclose(self._accelFactor, 1.0, rtol=1e-6):
+            timer_period = self.ros_clock_timestep / max(self._accelFactor, 1e-6)
+            self.clock_timer = self.create_timer(timer_period, self._clock_timer_callback)
+        
+    def _clock_timer_callback(self):
+        """Update the ROS clock based on simulation time and speed."""
+        if not self.stop_event.is_set() and np.isfinite(self._accelFactor) and not np.isclose(self._accelFactor, 1.0, rtol=1e-6):
+            current_time = self.get_clock().now()
+            dt = (current_time - self._last_clock_update).nanoseconds * 1e-9
+            # Update simulation time based on accelFactor
+            self._current_sim_time += dt * self._accelFactor
+            
+            # Only publish if time has advanced beyond last published time
+            if self._current_sim_time >= self._last_published_time:
+                self._update_ros_clock(self._current_sim_time)
+                self._last_published_time = self._current_sim_time
+            
+            self._last_clock_update = current_time
 
     def _ros_to_basilisk_callback(self, msg, namespace, msg_type_name):
         """
