@@ -33,7 +33,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     I = [0.315, 0, 0, 0, 0.315, 0, 0, 0, 0.315]
     
     # Create a single shared ROS bridge handler for all spacecraft
-    ros_bridge = RosBridgeHandler()
+    ros_bridge = RosBridgeHandler(accelFactor=accelFactor)
     ros_bridge.ModelTag = "ros_bridge"
     ros_bridge.bskLogger = sysModel.BSKLogger(bskLogging.BSK_DEBUG)
 
@@ -70,7 +70,7 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
             loc,
             dir,
             MaxThrust=1.5,
-            cutoffFrequency=63.83,
+            cutoffFrequency=3141.6,
             MinOnTime=1e-3,
         )
     thFactory.addToSpacecraft("ThrusterDynamics", thrusterSet, scObject)
@@ -118,14 +118,13 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     # Add models to simulation tasks
     scSim.AddModelToTask(simTaskName, thrusterSet, 10)
     scSim.AddModelToTask(simTaskName, scObject, 10)
-
-    scSim.AddModelToTask(fswTaskName, ros_bridge, 100)
-    scSim.AddModelToTask(fswTaskName, thrForceMapping, 11)
+    scSim.AddModelToTask(simTaskName, ros_bridge, 100)
+    
+    scSim.AddModelToTask(fswTaskName, thrForceMapping, 20)
     scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj, 10)
 
     # Vizard support (optional)
     if vizSupport.vizFound:
-        # Collect spacecraft data and thruster sets for all spacecraft
         scData = vizInterface.VizSpacecraftData()
         scData.spacecraftName = scObject.ModelTag
         scData.scStateInMsg.subscribeTo(scObject.scStateOutMsg)
@@ -135,14 +134,10 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         scSim.AddModelToTask(simTaskName, clockSync)
         
         viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject,
-                              thrEffectorList=thrusterSet,
-                              liveStream=liveStream,
-                              broadcastStream=broadcastStream,
+                              liveStream=liveStream, broadcastStream=broadcastStream,
                               )
-        vizSupport.createCustomModel(viz,
-                                    simBodiesToModify=[scObject.ModelTag],
-                                    modelPath='bskSat',
-                                    scale=[0.1, 0.1, 0.1])
+        vizSupport.createCustomModel(viz, simBodiesToModify=[scObject.ModelTag],
+                                    modelPath='bskSat', scale=[0.1]*3)
             
     # Run the simulation
     scSim.InitializeSimulation()
@@ -159,6 +154,6 @@ if __name__ == "__main__":
         broadcastStream=True,
         simTimeStep=1/100.,
         simTime=3600.0,
-        accelFactor=5.0,
+        accelFactor=1.0,
         fswTimeStep=1/10.
     )
