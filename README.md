@@ -1,8 +1,33 @@
 # Basilisk-ROS 2 Bridge
 
-A ROS 2 package that bridges the [Basilisk astrodynamics simulator](https://hanspeterschaub.info/basilisk/) with ROS 2, enabling real-time spacecraft simulation and control. Uses ZeroMQ for high-performance, low-latency communication.
+A lightweight, open-source communication bridge between the Basilisk astrodynamics simulation framework and ROS 2, enabling real-time, bidirectional data exchange.
 
 ![bsk_bridge_rviz_demo_compressed](https://github.com/user-attachments/assets/11cca7af-d8b4-443f-aed6-494e996d0d6c)
+
+This repository provides a ROS 2 interface for the [Basilisk astrodynamics framework](https://hanspeterschaub.info/basilisk/) that enables spacecraft simulations to interact directly with ROS 2 nodes without requiring any modifications to Basilisk's core. The bridge connects Basilisk's high-fidelity spacecraft dynamics and simulation timing with ROS 2's distributed middleware.
+
+Spacecraft states generated in Basilisk are published as ROS 2 topics, while commands such as forces, torques, or thruster states can be sent from ROS 2 back into the simulation. This allows standard ROS 2 tools and workflows (e.g., rosbag, RViz, PlotJuggler) to be applied directly to spacecraft simulations, and supports modular autonomy, estimation, control, and monitoring software running externally in ROS 2.
+
+The bridge supports single- and multi-spacecraft scenarios using namespace-aware topic conventions, enabling scalable setups such as formation flying and coordinated control.
+
+## Citation (preprint)
+If you use this package in academic work, please cite:
+
+E. Krantz, N. N. Chan, G. Tibert, H. Mao, C. Fuglesang,  
+*Bridging the Basilisk Astrodynamics Framework with ROS 2 for Modular Spacecraft Simulation and Hardware Integration*,  
+arXiv preprint arXiv:2512.09833, 2025.  
+https://arxiv.org/abs/2512.09833
+
+The paper introduces the bridge architecture and demonstrates it in a leader–follower formation-flying scenario using ROS 2-based NMPC, deployed identically in both Basilisk simulation and on a physical spacecraft testbed.
+
+```
+@article{krantz2025bridging,
+  title={Bridging the Basilisk Astrodynamics Framework with ROS 2 for Modular Spacecraft Simulation and Hardware Integration},
+  author={Krantz, Elias and Chan, Ngai Nam and Tibert, Gunnar and Mao, Huina and Fuglesang, Christer},
+  journal={arXiv preprint arXiv:2512.09833},
+  year={2025}
+}
+```
 
 ## Components
 
@@ -26,98 +51,105 @@ This package has been successfully built and exercised on the following configur
 
 ## Quick Start
 
-### 0. Software Pre-requisites
-Both **Basilisk** and **ROS 2** are required to be installed prior to running this package. Details on corresponding installation guides can be found from:
-- [**Basilisk**](https://avslab.github.io/basilisk/Install.html)
-- **ROS 2**: 
-    - [ROS 2 Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)
-    - [ROS 2 Rolling](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html)
+### 0) Prerequisites
+
+- [Basilisk](https://avslab.github.io/basilisk/Install.html)
+- ROS 2 (e.g. [Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html), [Rolling](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html))
 
 After installation of **Basilisk**, it is recommended to export the user path of Basilisk to `.bashrc` as:
 ```bash
 export BSK_PATH=your_BSK_path
 ```
 
-### 1. Install Dependencies
+### 1) Install dependencies
 
 ```bash
-# Install custom ROS 2 messages
+# Build and source the custom ROS 2 messages
 cd your_ros2_workspace/src
 git clone https://github.com/DISCOWER/bsk-msgs.git
 cd ..
 colcon build --packages-select bsk-msgs
 source install/setup.bash
 
-# Install this package
+# Build and source this package
 cd your_ros2_workspace/src
 git clone https://github.com/DISCOWER/bsk-ros2-bridge.git
 cd ..
 colcon build --packages-select bsk-ros2-bridge
 source install/setup.bash
 
-# Install required packages from `requirements.txt`
-# This snippet has to be run as GLOBAL pip installation, it might not work within virtual environments (e.g., python venv, conda env).
+# Python dependencies for the bridge + examples
 cd your_ros2_workspace/src/bsk-ros2-bridge
 pip install -r requirements.txt
 
 ```
 
-### 2. Run Example
+### 2) Run an example
 
 ```bash
-# Terminal 1: Start bridge
+# Terminal 1: start the bridge
 ros2 launch bsk-ros2-bridge bridge.launch.py
 
-# Terminal 2: Start Basilisk simulation (requires BSK environment)
+# Terminal 2: start a Basilisk scenario (requires the BSK environment)
 source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosBasic_da.py
 
-# Terminal 3: Start controller (here with namespace bskSat0 and direct allocation mode)
+# Terminal 3: send commands to Basilisk
+# The included `dummy-data-processor` is a minimal test tool (not a real controller).
+# For closed-loop control, see the BSK-ROS 2 MPC Controller:
+# https://github.com/DISCOWER/bsk-ros2-mpc
 ros2 run bsk-ros2-bridge dummy-data-processor --ros-args -r __ns:=/bskSat0 -p mode:=da
 ```
 
 ## Examples
 
-| Scenario | Type | Control Mode |
-|----------|------|--------------|
-| `scenarioRosBasic_da.py` | Single spacecraft no Earth | Direct thruster allocation |
-| `scenarioRosBasic_wrench.py` | Single spacecraft  no Earth| Force/torque commands |
-| `scenarioRosFormation_da.py` | Multi-spacecraft in LEO | Direct thruster allocation |
-| `scenarioRosFormation_wrench.py` | Multi-spacecraft in LEO | Force/torque commands |
-| `scenarioRosLeaderFollowerBasic_wrench.py` | 1 leader 2 followers no Earth | Force/torque commands |
-| `scenarioRosLeaderFollowerOrbit_wrench.py` | 1 leader 2 followers in LEO | Force/torque commands |
+| Scenario | Description | Control mode |
+|----------|-------------|--------------|
+| `scenarioRosBasic_da.py` | Single spacecraft (no Earth) | `da` |
+| `scenarioRosBasic_wrench.py` | Single spacecraft (no Earth) | `wrench` |
+| `scenarioRosOrbit_da.py` | Spacecraft orbiting Earth | `da` |
+| `scenarioRosOrbit_wrench.py` | Spacecraft orbiting Earth | `wrench` |
+| `scenarioRosLeaderFollowerBasic_wrench.py` | 1 leader + 2 followers (no Earth) | `wrench` |
+| `scenarioRosLeaderFollowerOrbit_wrench.py` | 1 leader + 2 followers (orbit) | `wrench` |
 
 ### Control Modes
 
-**Direct Allocation (`da`)**
-- Commands 12 individual thrusters (0-1.5N each)
-- Topic: `/[namespace]/bsk/in/thr_array_cmd_force`
+**Direct allocation (`da`)**
+- Commands individual thrusters
+- Topic: `/<namespace>/bsk/in/thr_array_cmd_force`
 
-**Wrench Control (`wrench`)**
+**Wrench control (`wrench`)**
 - Commands 3D forces and torques, mapped to thrusters by Basilisk
-- Topics: `/[namespace]/bsk/in/cmd_force`, `/[namespace]/bsk/in/cmd_torque`
+- Topics: `/<namespace>/bsk/in/cmd_force`, `/<namespace>/bsk/in/cmd_torque`
 
 ### Multi-Spacecraft Usage
 
-```bash
-# Start formation scenario
-source $BSK_PATH/.venv/bin/activate
-python examples/scenarioRosFormation_da.py
+The scenarios `scenarioRosOrbit_da.py` and `scenarioRosOrbit_wrench.py` support any number of spacecraft. Example (run an orbit scenario with multiple spacecraft):
 
-# Control each spacecraft separately
+```bash
+# Terminal 1: start the bridge
+ros2 launch bsk-ros2-bridge bridge.launch.py
+
+# Terminal 2: start the Basilisk scenario
+source $BSK_PATH/.venv/bin/activate
+python examples/scenarioRosOrbit_da.py
+
+# Terminal 3: start one controller per spacecraft
 ros2 run bsk-ros2-bridge dummy-data-processor --ros-args -r __ns:=/bskSat0 -p mode:=da
 ros2 run bsk-ros2-bridge dummy-data-processor --ros-args -r __ns:=/bskSat1 -p mode:=da
 ```
 
 ### Time Synchronization
 
-The bridge automatically publishes Basilisk simulation time to `/clock` using `rosgraph_msgs/Clock`. To enable ROS 2 nodes to use simulation time:
+The bridge publishes Basilisk simulation time to `/clock` using `rosgraph_msgs/Clock` when the simulation runs in non-realtime mode (i.e., `accelFactor` is not 1). This allows ROS 2 nodes to synchronize with accelerated or slowed simulations. In these cases, your ROS 2 nodes must be initialized with `use_sim_time=true`.
+
+The clock update interval can be configured via the `clock_timestep` launch argument (default: 0.01s):
 
 ```bash
-ros2 run your_node --ros-args -p use_sim_time:=true
+ros2 launch bsk-ros2-bridge bridge.launch.py clock_timestep:=0.1
 ```
 
-This ensures all ROS 2 nodes are synchronized with the Basilisk simulation time instead of system time.
+**Note:** When running in realtime mode (`accelFactor=1`), the `/clock` topic is not published and nodes should use system time (`use_sim_time:=false`).
 
 ## Development
 
@@ -143,7 +175,7 @@ thrFiringSchmittObj.thrForceInMsg.subscribeTo(ros_bridge.bskSat.THRArrayCmdForce
 scSim.AddModelToTask(simTaskName, ros_bridge)
 ```
 
-### Method Signatures
+### Registering ROS 2 Publishers and Subscribers
 
 ```python
 # Publisher: Sends Basilisk data to ROS 2
@@ -161,18 +193,41 @@ ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace
 
 ### Topic Structure
 
-Topics follow the pattern: `/[namespace]/bsk/[direction]/[topic_name]`
+Topics follow the pattern: `/<namespace>/bsk/<in|out>/<topic_name>`
 
 **Common Topics:**
-- `/clock` - Simulation time synchronization
-- `/[namespace]/bsk/out/sc_states` - Spacecraft states  
-- `/[namespace]/bsk/in/thr_array_cmd_force` - Thruster commands
-- `/[namespace]/bsk/in/cmd_force` - Force commands
-- `/[namespace]/bsk/in/cmd_torque` - Torque commands
+- `/clock` - Simulation time synchronization (only in non-realtime mode)
+- `/<namespace>/bsk/out/sc_states` - Spacecraft states  
+- `/<namespace>/bsk/in/thr_array_cmd_force` - Thruster commands
+- `/<namespace>/bsk/in/cmd_force` - Force commands
+- `/<namespace>/bsk/in/cmd_torque` - Torque commands
+
+### Required QoS
+
+All topics exchanged by the bridge use the following ROS 2 Quality of Service (QoS) settings:
+
+- Reliability: **BEST_EFFORT**
+- Durability: **VOLATILE**
+- History: **KEEP_LAST**
+- Queue depth: **1**
+
+This configuration prioritizes low-latency communication and ensures that only the most recent message is delivered, suitable for high-rate spacecraft simulation data.
 
 ### Port Configuration
 
-Default ZMQ ports: 5550 (Basilisk->Bridge), 5551 (Bridge->Basilisk), 5552 (heartbeat)
+Default ZMQ ports:
+- 5550: Basilisk → Bridge
+- 5551: Bridge → Basilisk
+- 5552: Heartbeat
+
+**Launch arguments:**
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `sub_port` | 5550 | ZMQ subscriber port for receiving data from Basilisk |
+| `pub_port` | 5551 | ZMQ publisher port for sending commands to Basilisk |
+| `heartbeat_port` | 5552 | ZMQ heartbeat port for connection monitoring |
+| `clock_timestep` | 0.01 | ROS clock update interval in seconds |
+| `namespace` | '' | Namespace for this bridge instance |
 
 **Custom ports:**
 ```bash
@@ -182,6 +237,15 @@ ros2 launch bsk-ros2-bridge bridge.launch.py sub_port:=6550 pub_port:=6551 heart
 ```python
 ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=6552)
 ```
+
+**RosBridgeHandler parameters:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ModelTag` | `'ros_bridge'` | Module identifier for logging |
+| `send_port` | 5550 | ZMQ port for sending data to bridge (BSK → ROS 2) |
+| `receive_port` | 5551 | ZMQ port for receiving data from bridge (ROS 2 → BSK) |
+| `heartbeat_port` | 5552 | ZMQ port for heartbeat monitoring |
+| `accelFactor` | NaN | Simulation speed factor; set to enable `/clock` publishing |
 
 ## Features
 
@@ -195,18 +259,18 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 
 ## Troubleshooting
 
-**Missing message types:** Ensure `bsk_msgs` is built and sourced
+**Missing message types**: ensure `bsk_msgs` is built and sourced
 
-**Port conflicts:** Check ports status with: 
+**Port conflicts**: check ports status with: 
 ```bash
 lsof -i :5550 && lsof -i :5551 && lsof -i :5552
 ```
-Kill occupied ports via PID if they are not closed properly:
+Kill occupied ports via PID if needed:
 ```bash
 kill -9 {port PID}
 ```
 
-**Connection issues:** Ensure bridge is running, verify BSK environment is activated
+**Connection issues**: ensure bridge is running, verify BSK environment is activated
 
 ## References
 
