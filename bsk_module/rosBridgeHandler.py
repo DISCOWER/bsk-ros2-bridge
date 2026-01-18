@@ -536,7 +536,7 @@ class RosBridgeHandler(sysModel.SysModel):
     # BASILISK MODULE INTERFACE
     # =========================================================================
 
-    def Reset(self):
+    def Reset(self, CurrentSimNanos):
         """
         Reset method called to initialize persistent data to ready state.
         """
