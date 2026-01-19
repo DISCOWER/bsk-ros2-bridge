@@ -13,7 +13,7 @@ import threading
 import orjson
 import inspect
 import re
-import time
+import queue
 import numpy as np
 
 # =============================================================================
@@ -56,8 +56,8 @@ class BskRosBridge(Node):
         
         # Threading control
         self.stop_event = threading.Event()
-        self._lock = threading.Lock()           # Protect shared state across threads
-        self._cache_lock = threading.Lock()     # Protect caches across threads
+        self._zmq_send_lock = threading.Lock()  # Protect ZMQ pub_socket (not thread-safe)
+        self._event_queue = queue.SimpleQueue()  # ZMQ thread -> ROS thread event transfer
         self._field_mapping_cache = {}          # Message field name mappings
         self._topic_name_cache = {}             # Topic name conversions
         
@@ -90,6 +90,9 @@ class BskRosBridge(Node):
         # Initialize bridge components
         self._discover_bsk_message_types()
         self._setup_zmq_communication()
+
+        # Timer to periodically drain event queue in ROS thread
+        self._event_drain_timer = self.create_timer(0.001, self._drain_event_queue)
         self._start_background_threads()
         
         # Special topic for simulation time synchronization (if not realtime)
@@ -191,16 +194,18 @@ class BskRosBridge(Node):
         """
         Convert BSK message type to ROS topic name with caching.
         """
-        with self._cache_lock:
-            if bsk_type_name in self._topic_name_cache:
-                return self._topic_name_cache[bsk_type_name]
-            
-            # Remove BSK suffix and convert to snake_case
-            name = bsk_type_name[:-10] if bsk_type_name.endswith('MsgPayload') else bsk_type_name
-            topic_name = CAMEL_TO_SNAKE_RE.sub('_', name).lower()
-            
-            self._topic_name_cache[bsk_type_name] = topic_name
+        topic_name = self._topic_name_cache.get(bsk_type_name)
+        if topic_name is not None:
             return topic_name
+        if bsk_type_name in self._topic_name_cache:
+            return self._topic_name_cache[bsk_type_name]
+
+        # Remove BSK suffix and convert to snake_case
+        name = bsk_type_name[:-10] if bsk_type_name.endswith('MsgPayload') else bsk_type_name
+        topic_name = CAMEL_TO_SNAKE_RE.sub('_', name).lower()
+
+        self._topic_name_cache[bsk_type_name] = topic_name
+        return topic_name
 
     def _json_to_bsk_msg(self, json_data, msg_type):
         """
@@ -211,13 +216,16 @@ class BskRosBridge(Node):
         msg_type_name = msg_type.__name__
 
         # Use cached field mapping for performance
-        with self._cache_lock:
+        field_mapping = self._field_mapping_cache.get(msg_type_name)
+        if field_mapping is None:
             if msg_type_name not in self._field_mapping_cache:
                 field_types = msg.get_fields_and_field_types()
                 bsk_field_mapping = {name.lower(): name for name in field_types}
                 self._field_mapping_cache[msg_type_name] = (bsk_field_mapping, field_types)
-            
-            bsk_field_mapping, field_types = self._field_mapping_cache[msg_type_name]
+
+            field_mapping = self._field_mapping_cache[msg_type_name]
+        
+        bsk_field_mapping, field_types = field_mapping
 
         # Map JSON fields to ROS message fields
         for json_field_name, field_value in json_data.items():
@@ -281,37 +289,17 @@ class BskRosBridge(Node):
         
         while not self.stop_event.is_set() and rclpy.ok():
             try:
-                msg_bytes = self.sub_socket.recv(flags=zmq.NOBLOCK)  # Receive as bytes
+                msg_bytes = self.sub_socket.recv()  # Receive as bytes
                 data = json_loads(msg_bytes)
                 
                 # Validate message structure
                 if not isinstance(data, dict):
                     continue
 
-                # Handle unified topic requests from BSK
-                if data.get('topic_request', False):
-                    self._handle_topic_request(data)
-                elif data.get('clock_reset', False):
-                    # Reset clock when a new handler initializes
-                    with self._lock:
-                        self._current_sim_time = float(data.get('sim_time', 0.0))
-                        self._last_published_time = self._current_sim_time
-                        self._accelFactor = float(data.get('accelFactor', 1.0))
-                    self.get_logger().info("Clock reset by new RosBridgeHandler")
-                    # Send acknowledgement
-                    ack = {
-                        "clock_reset_ack": True,
-                        "sim_time": self._current_sim_time,
-                        "accelFactor": self._accelFactor
-                    }
-                    self.pub_socket.send(json_dumps(ack), flags=zmq.NOBLOCK)
-                elif 'sim_time' in data:
-                    self._handle_sim_time_update(data)
-                else:
-                    self._handle_telemetry_message(data)
+                self._event_queue.put(data)
                     
             except zmq.error.Again:
-                time.sleep(0.001)  # Prevent CPU spinning when no messages
+                # Timeout waiting for data (RCVTIMEO). Loop back and check stop_event.
                 continue
             except orjson.JSONDecodeError:
                 self.get_logger().debug("Invalid JSON received from BSK")
@@ -321,6 +309,45 @@ class BskRosBridge(Node):
                 
         self.get_logger().debug("ZMQ listener thread exiting")
 
+    def _drain_event_queue(self):
+        """ROS-thread timer: drain queued ZMQ events and handle them safely."""
+        if self.stop_event.is_set() or not rclpy.ok():
+            return
+
+        while True:
+            try:
+                data = self._event_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            try:
+                # Handle unified topic requests from BSK
+                if data.get('topic_request', False):
+                    self._handle_topic_request(data)
+                elif data.get('clock_reset', False):
+                    # Reset clock when a new handler initializes
+                    self._current_sim_time = float(data.get('sim_time', 0.0))
+                    self._last_published_time = self._current_sim_time
+                    self._accelFactor = float(data.get('accelFactor', 1.0))
+                    sim_time = self._current_sim_time
+                    accel_factor = self._accelFactor
+
+                    self.get_logger().info("Clock reset by new RosBridgeHandler")
+                    # Send acknowledgement
+                    ack = {
+                        "clock_reset_ack": True,
+                        "sim_time": sim_time,
+                        "accelFactor": accel_factor
+                    }
+                    with self._zmq_send_lock:
+                        self.pub_socket.send(json_dumps(ack), flags=zmq.NOBLOCK)
+                elif 'sim_time' in data:
+                    self._handle_sim_time_update(data)
+                else:
+                    self._handle_telemetry_message(data)
+            except Exception as e:
+                self.get_logger().error(f"Error processing queued ZMQ event: {e}")
+
     # =========================================================================
     # MESSAGE HANDLING METHODS
     # =========================================================================
@@ -329,38 +356,37 @@ class BskRosBridge(Node):
         """Handle simulation time synchronization from BSK."""
         sim_time = data['sim_time']
         if sim_time is not None:
-            with self._lock:
-                self._current_sim_time = float(sim_time)
-                new_accel_factor = float(data.get('accelFactor', 1.0))
-                
-                # Check if accelFactor changed from/to realtime (NaN or close to 1.0)
-                old_is_realtime = not np.isfinite(self._accelFactor) or np.isclose(self._accelFactor, 1.0, rtol=1e-6)
-                new_is_realtime = not np.isfinite(new_accel_factor) or np.isclose(new_accel_factor, 1.0, rtol=1e-6)
-                accel_factor_changed = (old_is_realtime != new_is_realtime) or (not new_is_realtime and self._accelFactor != new_accel_factor)
-                self._accelFactor = new_accel_factor
-                
-                # Only manage clock publisher if not realtime (accelFactor is not NaN and not close to 1.0)
-                if np.isfinite(self._accelFactor) and not np.isclose(self._accelFactor, 1.0, rtol=1e-6):
-                    # Initialize clock publisher if it doesn't exist
-                    if self.clock_pub is None:
-                        self.clock_pub = self.create_publisher(Clock, '/clock', qos_profile=self.qos_profile)
-                        self.get_logger().info("Created /clock publisher for non-realtime simulation")
-                    
-                    # Start or update clock timer
-                    if self.clock_timer is None or accel_factor_changed:
-                        if self.clock_timer is not None:
-                            self.destroy_timer(self.clock_timer)
-                        self._start_clock_timer()
-                else:
-                    # Destroy clock publisher and timer if accelFactor is NaN (realtime)
-                    if self.clock_pub is not None:
-                        self.destroy_publisher(self.clock_pub)
-                        self.clock_pub = None
-                        self.get_logger().info("Destroyed /clock publisher for realtime simulation")
-                    
+            self._current_sim_time = float(sim_time)
+            new_accel_factor = float(data.get('accelFactor', 1.0))
+
+            # Check if accelFactor changed from/to realtime (NaN or close to 1.0)
+            old_is_realtime = not np.isfinite(self._accelFactor) or np.isclose(self._accelFactor, 1.0, rtol=1e-6)
+            new_is_realtime = not np.isfinite(new_accel_factor) or np.isclose(new_accel_factor, 1.0, rtol=1e-6)
+            accel_factor_changed = (old_is_realtime != new_is_realtime) or (not new_is_realtime and self._accelFactor != new_accel_factor)
+            self._accelFactor = new_accel_factor
+
+            # Only manage clock publisher if not realtime (accelFactor is not NaN and not close to 1.0)
+            if np.isfinite(self._accelFactor) and not np.isclose(self._accelFactor, 1.0, rtol=1e-6):
+                # Initialize clock publisher if it doesn't exist
+                if self.clock_pub is None:
+                    self.clock_pub = self.create_publisher(Clock, '/clock', qos_profile=self.qos_profile)
+                    self.get_logger().info("Created /clock publisher for non-realtime simulation")
+
+                # Start or update clock timer
+                if self.clock_timer is None or accel_factor_changed:
                     if self.clock_timer is not None:
                         self.destroy_timer(self.clock_timer)
-                        self.clock_timer = None
+                    self._start_clock_timer()
+            else:
+                # Destroy clock publisher and timer if accelFactor is NaN (realtime)
+                if self.clock_pub is not None:
+                    self.destroy_publisher(self.clock_pub)
+                    self.clock_pub = None
+                    self.get_logger().info("Destroyed /clock publisher for realtime simulation")
+
+                if self.clock_timer is not None:
+                    self.destroy_timer(self.clock_timer)
+                    self.clock_timer = None
             
     def _update_ros_clock(self, sim_time):
         """Update ROS clock with the given simulation time."""
@@ -386,24 +412,24 @@ class BskRosBridge(Node):
             full_topic_name = f"/{namespace}/bsk/out/{topic_name}"
             
             # Initialize namespace tracking and create publisher
-            with self._lock:
-                if namespace not in self.bridge_publishers:
-                    self.bridge_publishers[namespace] = {}
-                    if namespace not in self.bridge_subscribers:
-                        self.bridge_subscribers[namespace] = {}
-                
-                # Create publisher on first message
-                if topic_name not in self.bridge_publishers[namespace]:
-                    msg_type = self._bsk_msg_types[msg_type_name]                
-                    publisher = self.create_publisher(msg_type, full_topic_name, self.qos_profile)
-                    self.bridge_publishers[namespace][topic_name] = {
-                        'publisher': publisher,
-                        'type': msg_type
-                    }
-                    self.get_logger().info(f"Created publisher for {full_topic_name} ({msg_type_name})")
+            if namespace not in self.bridge_publishers:
+                self.bridge_publishers[namespace] = {}
+                if namespace not in self.bridge_subscribers:
+                    self.bridge_subscribers[namespace] = {}
+
+            # Create publisher on first message
+            if topic_name not in self.bridge_publishers[namespace]:
+                msg_type = self._bsk_msg_types[msg_type_name]
+                publisher = self.create_publisher(msg_type, full_topic_name, self.qos_profile)
+                self.bridge_publishers[namespace][topic_name] = {
+                    'publisher': publisher,
+                    'type': msg_type
+                }
+                self.get_logger().info(f"Created publisher for {full_topic_name} ({msg_type_name})")
+
+            pub_info = self.bridge_publishers[namespace][topic_name]
             
             # Convert and publish message
-            pub_info = self.bridge_publishers[namespace][topic_name]
             bsk_msg = self._json_to_bsk_msg(data, pub_info['type'])
             pub_info['publisher'].publish(bsk_msg)
             
@@ -447,12 +473,11 @@ class BskRosBridge(Node):
     def _create_bsk_input_subscriber(self, namespace, msg_type_name, topic_name):
         """Create ROS subscriber for BSK input (ROS2 -> BSK)."""
         full_topic_name = f"/{namespace}/bsk/in/{topic_name}"
-        
-        with self._lock:
-            if namespace not in self.bridge_subscribers:
-                self.bridge_subscribers[namespace] = {}
-            if topic_name in self.bridge_subscribers[namespace]:
-                return True  # Already exists
+
+        if namespace not in self.bridge_subscribers:
+            self.bridge_subscribers[namespace] = {}
+        if topic_name in self.bridge_subscribers[namespace]:
+            return True  # Already exists
         
         # Validate message type
         if msg_type_name not in self._bsk_msg_types:
@@ -470,14 +495,13 @@ class BskRosBridge(Node):
         try:
             subscription = self.create_subscription(
                 msg_type, full_topic_name, create_callback(msg_type_name, namespace), self.qos_profile)
-            
-            with self._lock:
-                if topic_name not in self.bridge_subscribers[namespace]:
-                    self.bridge_subscribers[namespace][topic_name] = subscription
-                    self.get_logger().info(f"Confirmed BSK subscriber: {full_topic_name} ({msg_type_name})")
-                else:
-                    # Another thread created it - destroy the duplicate
-                    self.destroy_subscription(subscription)
+
+            if topic_name not in self.bridge_subscribers[namespace]:
+                self.bridge_subscribers[namespace][topic_name] = subscription
+                self.get_logger().info(f"Confirmed BSK subscriber: {full_topic_name} ({msg_type_name})")
+            else:
+                # Another thread created it - destroy the duplicate
+                self.destroy_subscription(subscription)
             return True
             
         except Exception as e:
@@ -487,11 +511,10 @@ class BskRosBridge(Node):
     def _confirm_bsk_output_publisher(self, namespace, msg_type_name, topic_name):
         """Confirm that BSK output publisher will be created on demand."""
         full_topic_name = f"/{namespace}/bsk/out/{topic_name}"
-        
-        with self._lock:
-            # Initialize namespace tracking
-            if namespace not in self.bridge_publishers:
-                self.bridge_publishers[namespace] = {}
+
+        # Initialize namespace tracking
+        if namespace not in self.bridge_publishers:
+            self.bridge_publishers[namespace] = {}
         
         # Check if message type is valid
         if msg_type_name not in self._bsk_msg_types:
@@ -518,7 +541,8 @@ class BskRosBridge(Node):
         }
         
         try:
-            self.pub_socket.send(json_dumps(confirmation), flags=zmq.NOBLOCK)
+            with self._zmq_send_lock:
+                self.pub_socket.send(json_dumps(confirmation), flags=zmq.NOBLOCK)
             action = "subscription" if direction == "in" else "publisher"
             self.get_logger().debug(f"Sent {action} confirmation for {request_id}")
         except Exception as e:
@@ -538,22 +562,21 @@ class BskRosBridge(Node):
             return
         
         sim_time_to_publish = None
-        
-        with self._lock:
-            if not np.isfinite(self._accelFactor) or np.isclose(self._accelFactor, 1.0, rtol=1e-6):
-                return
-                
-            current_time = self.get_clock().now()
-            dt = (current_time - self._last_clock_update).nanoseconds * 1e-9
-            # Update simulation time based on accelFactor
-            self._current_sim_time += dt * self._accelFactor
-            
-            # Only publish if time has advanced beyond last published time
-            if self._current_sim_time >= self._last_published_time:
-                sim_time_to_publish = self._current_sim_time
-                self._last_published_time = self._current_sim_time
-            
-            self._last_clock_update = current_time
+
+        if not np.isfinite(self._accelFactor) or np.isclose(self._accelFactor, 1.0, rtol=1e-6):
+            return
+
+        current_time = self.get_clock().now()
+        dt = (current_time - self._last_clock_update).nanoseconds * 1e-9
+        # Update simulation time based on accelFactor
+        self._current_sim_time += dt * self._accelFactor
+
+        # Only publish if time has advanced beyond last published time
+        if self._current_sim_time >= self._last_published_time:
+            sim_time_to_publish = self._current_sim_time
+            self._last_published_time = self._current_sim_time
+
+        self._last_clock_update = current_time
         
         # Publish outside lock to reduce latency
         if sim_time_to_publish is not None:
@@ -576,7 +599,8 @@ class BskRosBridge(Node):
             
             # Send to BSK
             json_bytes = json_dumps(data)
-            self.pub_socket.send(json_bytes, flags=zmq.NOBLOCK)
+            with self._zmq_send_lock:
+                self.pub_socket.send(json_bytes, flags=zmq.NOBLOCK)
             self.get_logger().debug(f"Sent to Basilisk: {msg_type_name} for {namespace}")
             
         except zmq.error.Again:
@@ -592,6 +616,11 @@ class BskRosBridge(Node):
         """Clean shutdown of bridge components."""
         self.get_logger().info("Shutting down BSK-ROS2 Bridge...")
         self.stop_event.set()
+
+        # Stop queue drain timer
+        if getattr(self, "_event_drain_timer", None) is not None:
+            self.destroy_timer(self._event_drain_timer)
+            self._event_drain_timer = None
         
         # Destroy clock timer if exists
         if self.clock_timer is not None:

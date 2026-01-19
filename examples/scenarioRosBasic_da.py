@@ -78,8 +78,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     
     # Setup ROS bridge - Set up subscribers and publishers
     ros_bridge.add_ros_subscriber('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgOut', 'thr_array_cmd_force', 'bskSat0')
-    ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat0')
-    ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', 'bskSat0')
+    ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat0', max_rate=20)
+    ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', 'bskSat0', max_rate=20)
 
     # Setup the Schmitt trigger thruster firing logic module
     thrFiringSchmittObj = thrFiringSchmitt.thrFiringSchmitt()

@@ -162,7 +162,7 @@ ros_bridge = RosBridgeHandler()
 ros_bridge.ModelTag = "ros_bridge"
 
 # Add publishers (Basilisk -> ROS 2)
-ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat')
+ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat', max_rate=100.0)
 
 # Add subscribers (ROS 2 -> Basilisk)  
 ros_bridge.add_ros_subscriber('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgOut', 'thr_array_cmd_force', 'bskSat')
@@ -179,7 +179,7 @@ scSim.AddModelToTask(simTaskName, ros_bridge)
 
 ```python
 # Publisher: Sends Basilisk data to ROS 2
-ros_bridge.add_ros_publisher(msg_type_name, handler_name, topic_name, namespace)
+ros_bridge.add_ros_publisher(msg_type_name, handler_name, topic_name, namespace, max_rate=None)
 
 # Subscriber: Receives ROS 2 commands in Basilisk
 ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace)
@@ -190,6 +190,7 @@ ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace
 - `handler_name` - Internal message handler (e.g., `'SCStatesMsgIn'`, `'CmdForceBodyMsgOut'`)
 - `topic_name` - ROS 2 topic name (e.g., `'sc_states'`, `'cmd_force'`)
 - `namespace` - Spacecraft identifier (e.g., `'bskSat'`, `'bskSat0'`)
+- `max_rate` - (Publishers only) optional maximum publishing rate (Hz). If not specified, publishes at the task rate.
 
 ### Topic Structure
 

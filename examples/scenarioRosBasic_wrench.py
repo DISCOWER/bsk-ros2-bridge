@@ -10,7 +10,7 @@ sys.path.append(os.path.join(path, '..'))
 from bsk_module.rosBridgeHandler import RosBridgeHandler
 from Basilisk import __path__
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector
-from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters, simIncludeGravBody, orbitalMotion
+from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, fswSetupThrusters
 from Basilisk.fswAlgorithms import thrFiringSchmitt, forceTorqueThrForceMapping
 from Basilisk.simulation import simSynch
 from Basilisk.architecture import messaging, bskLogging, sysModel
@@ -84,8 +84,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     # Setup ROS bridge - Set up subscribers and publishers
     ros_bridge.add_ros_subscriber('CmdForceBodyMsgPayload', 'CmdForceBodyMsgOut', 'cmd_force', 'bskSat0')
     ros_bridge.add_ros_subscriber('CmdTorqueBodyMsgPayload', 'CmdTorqueBodyMsgOut', 'cmd_torque', 'bskSat0')
-    ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat0')
-    ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', 'bskSat0')
+    ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat0', max_rate=20)
+    ros_bridge.add_ros_publisher('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgIn', 'thr_array_cmd_force', 'bskSat0', max_rate=20)
 
     # Setup the Schmitt trigger thruster firing logic module
     thrFiringSchmittObj = thrFiringSchmitt.thrFiringSchmitt()
