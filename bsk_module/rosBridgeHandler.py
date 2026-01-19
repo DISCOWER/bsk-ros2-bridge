@@ -260,7 +260,7 @@ class RosBridgeHandler(sysModel.SysModel):
     # SET UP MESSAGE HANDLING
     # =========================================================================
 
-    def add_ros_publisher(self, msg_type_name, handler_name, topic_name, namespace):
+    def add_ros_publisher(self, msg_type_name, handler_name, topic_name, namespace, max_rate=None):
         """
         Add BSK message handler for publishing data to ROS2 (BSK -> ROS2).
         
@@ -269,6 +269,7 @@ class RosBridgeHandler(sysModel.SysModel):
             handler_name (str): Name for the handler (e.g., 'scStateReader')
             topic_name (str): Topic name (e.g., 'imu_1', 'imu_2')
             namespace (str): Namespace for this specific handler (e.g., 'spacecraft_1')
+            max_rate (float, optional): Maximum publishing rate (Hz). If None, publishes at task rate.
         """
         if msg_type_name not in self.bsk_msg_types:
             self._log_error(f"Unknown BSK message type: {msg_type_name}")
@@ -284,11 +285,19 @@ class RosBridgeHandler(sysModel.SysModel):
         
         # Store handler configuration
         unique_handler_key = f"{namespace}_{handler_name}"
+        
+        # Calculate minimum interval (nanoseconds) if rate limiting is enabled
+        min_interval = None
+        if max_rate is not None and max_rate > 0:
+            min_interval = int(1e9 / max_rate)  # Convert Hz to nanoseconds
+        
         self.input_msg_readers[unique_handler_key] = {
             'reader': handler,
             'msg_type': msg_type_name,
             'topic_name': topic_name,
-            'namespace': namespace
+            'namespace': namespace,
+            'min_interval': min_interval,  # Nanoseconds
+            'last_publish_time': 0  # Nanoseconds
         }
         
         # Create namespace object if it doesn't exist
@@ -574,8 +583,16 @@ class RosBridgeHandler(sysModel.SysModel):
         # Process all input message readers and publish to ROS2
         for reader_name, reader_info in self.input_msg_readers.items():
             if reader_info['reader'].isLinked() and reader_info['reader'].isWritten():
+                # Check rate limiting if enabled
+                if reader_info.get('min_interval') is not None:
+                    elapsed = CurrentSimNanos - reader_info['last_publish_time']
+                    if elapsed < reader_info['min_interval']:
+                        continue  # Skip this publish, not enough time has passed
+                
                 msg_payload = reader_info['reader']()
                 self._publish_bsk_message(CurrentSimNanos, msg_payload, reader_info['msg_type'], reader_info['namespace'])
+
+                reader_info['last_publish_time'] = CurrentSimNanos
 
         # Receive and process commands from ROS2
         self._receive_ros_message(CurrentSimNanos)
