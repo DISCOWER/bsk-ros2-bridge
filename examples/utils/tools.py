@@ -19,16 +19,19 @@ def get_initial_conditions_from_hill(mu, rN, vN, r_hill, v_hill):
     v_hill = np.array(v_hill)
     
     # Rotation matrix from Hill frame to inertial frame
-    r_hat = rN/np.linalg.norm(rN)
+    r_norm = np.linalg.norm(rN)
+    r_hat = rN / r_norm
     h_vec = np.cross(rN, vN)
-    h_hat = h_vec/np.linalg.norm(h_vec)
-    theta_hat = np.cross(r_hat, h_hat)
-    theta_hat = theta_hat/np.linalg.norm(theta_hat)
+    h_norm = np.linalg.norm(h_vec)
+    if h_norm == 0.0:
+        raise ValueError("Invalid chief state: rN and vN are colinear; Hill frame undefined")
+    h_hat = h_vec / h_norm
+    theta_hat = np.cross(h_hat, r_hat)
+    theta_hat = theta_hat / np.linalg.norm(theta_hat)
     rotMat = np.column_stack((r_hat, theta_hat, h_hat))
 
-    # Mean motion of the chief spacecraft
-    omega_mag = np.sqrt(mu / np.linalg.norm(rN)**3)
-    omega_vec = omega_mag * h_hat
+    # Angular velocity of Hill frame
+    omega_vec = (h_norm / (r_norm ** 2)) * h_hat
 
     # Convert to inertial frame
     r = rN + rotMat @ r_hill
