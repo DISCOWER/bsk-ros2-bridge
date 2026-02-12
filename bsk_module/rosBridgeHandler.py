@@ -297,7 +297,7 @@ class RosBridgeHandler(sysModel.SysModel):
             'topic_name': topic_name,
             'namespace': namespace,
             'min_interval': min_interval,  # Nanoseconds
-            'last_publish_time': 0  # Nanoseconds
+            'next_publish_time': 0  # Nanoseconds
         }
         
         # Create namespace object if it doesn't exist
@@ -585,14 +585,18 @@ class RosBridgeHandler(sysModel.SysModel):
             if reader_info['reader'].isLinked() and reader_info['reader'].isWritten():
                 # Check rate limiting if enabled
                 if reader_info.get('min_interval') is not None:
-                    elapsed = CurrentSimNanos - reader_info['last_publish_time']
-                    if elapsed < reader_info['min_interval']:
-                        continue  # Skip this publish, not enough time has passed
+                    if CurrentSimNanos < reader_info['next_publish_time']:
+                        continue  # Skip this publish, scheduled time not yet reached
                 
                 msg_payload = reader_info['reader']()
                 self._publish_bsk_message(CurrentSimNanos, msg_payload, reader_info['msg_type'], reader_info['namespace'])
 
-                reader_info['last_publish_time'] = CurrentSimNanos
+                # Advance next publish time by the fixed interval from the scheduled time
+                if reader_info.get('min_interval') is not None:
+                    reader_info['next_publish_time'] += reader_info['min_interval']
+                    # Guard against falling behind
+                    if reader_info['next_publish_time'] <= CurrentSimNanos:
+                        reader_info['next_publish_time'] = CurrentSimNanos + reader_info['min_interval']
 
         # Receive and process commands from ROS2
         self._receive_ros_message(CurrentSimNanos)

@@ -13,7 +13,7 @@ from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, viz
 from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter, forceTorqueThrForceMapping, hillPoint, attTrackingError
 from Basilisk.architecture import bskLogging, sysModel, messaging
 from bsk_module.rosBridgeHandler import RosBridgeHandler
-from examples.utils.tools import get_initial_conditions_from_hill
+from examples.utils.tools import get_initial_conditions_from_hill, get_hill_frame_attitude
 
 def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
     # --- Set up simulation classes and processes ---
@@ -55,6 +55,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     scHillObj.ModelTag = "bskSatHill"
     scHillObj.hub.r_CN_NInit = rN  # m   - r_BN_N
     scHillObj.hub.v_CN_NInit = vN  # m/s - v_BN_N
+    hillFrameMRP = get_hill_frame_attitude(rN, vN)
+    scHillObj.hub.sigma_BNInit = hillFrameMRP
     gravFactory.addBodiesTo(scHillObj)
     hillNavObj = simpleNav.SimpleNav()
     hillNavObj.ModelTag = "chiefNav"
@@ -116,6 +118,8 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
         r, v = get_initial_conditions_from_hill(mu, rN, vN, relative_positions[i], [0, 0, 0])
         scObject_i.hub.r_CN_NInit = r
         scObject_i.hub.v_CN_NInit = v
+        hillFrameMRP = get_hill_frame_attitude(rN, vN)
+        scObject_i.hub.sigma_BNInit = hillFrameMRP
 
         # Setup thrusters for spacecraft
         thrusterSet_i = thrusterDynamicEffector.ThrusterDynamicEffector()
