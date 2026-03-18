@@ -54,6 +54,8 @@ After installation of **Basilisk**, it is recommended to export the user path of
 export BSK_PATH=your_BSK_path
 ```
 
+In order to visualize the results of the simulations make sure you install [Vizard](https://hanspeterschaub.info/basilisk/Vizard/VizardDownload.html).
+
 ### Install
 
 ```bash
@@ -61,7 +63,7 @@ cd your_ros2_workspace/src
 git clone https://github.com/DISCOWER/bsk-msgs.git
 git clone https://github.com/DISCOWER/bsk-ros2-bridge.git
 cd ..
-colcon build --packages-select bsk-msgs bsk-ros2-bridge
+colcon build bsk-msgs bsk-ros2-bridge
 source install/setup.bash
 
 pip install -r src/bsk-ros2-bridge/requirements.txt
