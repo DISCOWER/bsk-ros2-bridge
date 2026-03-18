@@ -62,6 +62,7 @@ In order to visualize the results of the simulations make sure you install [Viza
 cd your_ros2_workspace/src
 git clone https://github.com/DISCOWER/bsk-msgs.git
 git clone https://github.com/DISCOWER/bsk-ros2-bridge.git
+git clone https://github.com/DISCOWER/bsk-ros2-mpc.git
 cd ..
 colcon build bsk-msgs bsk-ros2-bridge
 source install/setup.bash
