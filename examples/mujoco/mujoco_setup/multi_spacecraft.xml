@@ -1,0 +1,105 @@
+<mujoco>
+    <option gravity="0 0 0"/>
+    
+    <default class="main">
+        <default class="spacecraft">
+        <!-- solref: [time constant, damping ratio]
+             solimp: [penetration tolerance, restitution, friction loss]
+             friction: [sliding, torsional, rolling] -->
+        <geom type="mesh"
+            mesh="hex_prism"
+            rgba="0.8 0.8 0.8 0.8"
+            solref="0.01 0.6"
+            solimp="0.9 0.95 0.001"
+            friction="0.3 0.01 0.01"/>
+            <site type="sphere" size="0.02" rgba="1 0 0 1"/>
+        </default>
+    </default>
+
+    <asset>
+        <!-- Hex shape to fit bskSat (hexagonal prism with each hexagonal Side = 1.15458 m, Height = 2 m (z)), scaled by a factor of 0.2 -->
+        <mesh name="hex_prism"
+              vertex="0.230916 0 0.2 0.115458 0.19999 0.2 -0.115458 0.19999 0.2 -0.230916 0 0.2 -0.115458 -0.19999 0.2 0.115458 -0.19999 0.2 0.230916 0 -0.2 0.115458 0.19999 -0.2 -0.115458 0.19999 -0.2 -0.230916 0 -0.2 -0.115458 -0.19999 -0.2 0.115458 -0.19999 -0.2"
+              face="0 1 2 0 2 3 0 3 4 0 4 5 6 8 7 6 9 8 6 10 9 6 11 10 0 1 7 0 7 6 1 2 8 1 8 7 2 3 9 2 9 8 3 4 10 3 10 9 4 5 11 4 11 10 5 0 6 5 6 11"/>
+    </asset>
+
+    <worldbody>
+        <!-- Spacecraft 0 -->
+        <body name="bskSat0" childclass="spacecraft">
+            <freejoint/>
+            <inertial pos="0 0 0" mass="17.8" diaginertia="0.315 0.315 0.315"/>
+            <site name="bskSat0_origin"/>
+            <geom name="bskSat0_box"/>
+            
+            <!-- Thruster sites for 12 thrusters -->
+            <site name="bskSat0_thr_0" pos="0 0 0.17" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_1" pos="0 0 0.17" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_2" pos="0 0 -0.17" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_3" pos="0 0 -0.17" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_4" pos="0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_5" pos="0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_6" pos="-0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_7" pos="-0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_8" pos="0 0.17 0" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_9" pos="0 0.17 0" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_10" pos="0 -0.17 0" rgba="0 1 0 1"/>
+            <site name="bskSat0_thr_11" pos="0 -0.17 0" rgba="0 1 0 1"/>
+        </body>
+        
+        <!-- Spacecraft 1 -->
+        <body name="bskSat1" childclass="spacecraft">
+            <freejoint/>
+            <inertial pos="0 0 0" mass="17.8" diaginertia="0.315 0.315 0.315"/>
+            <site name="bskSat1_origin"/>
+            <geom name="bskSat1_box"/>
+            
+            <!-- Thruster sites for 12 thrusters -->
+            <site name="bskSat1_thr_0" pos="0 0 0.17" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_1" pos="0 0 0.17" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_2" pos="0 0 -0.17" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_3" pos="0 0 -0.17" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_4" pos="0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_5" pos="0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_6" pos="-0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_7" pos="-0.17 0 0" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_8" pos="0 0.17 0" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_9" pos="0 0.17 0" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_10" pos="0 -0.17 0" rgba="0 1 0 1"/>
+            <site name="bskSat1_thr_11" pos="0 -0.17 0" rgba="0 1 0 1"/>
+        </body>
+
+        <!-- Add more spacecraft here -->
+    </worldbody>
+
+    <actuator>
+        <!-- Thrusters for Spacecraft 0 -->
+        <motor name="bskSat0_thr_0" site="bskSat0_thr_0" gear="1 0 0 0 0 0"/>
+        <motor name="bskSat0_thr_1" site="bskSat0_thr_1" gear="-1 0 0 0 0 0"/>
+        <motor name="bskSat0_thr_2" site="bskSat0_thr_2" gear="1 0 0 0 0 0"/>
+        <motor name="bskSat0_thr_3" site="bskSat0_thr_3" gear="-1 0 0 0 0 0"/>
+        <motor name="bskSat0_thr_4" site="bskSat0_thr_4" gear="0 1 0 0 0 0"/>
+        <motor name="bskSat0_thr_5" site="bskSat0_thr_5" gear="0 -1 0 0 0 0"/>
+        <motor name="bskSat0_thr_6" site="bskSat0_thr_6" gear="0 1 0 0 0 0"/>
+        <motor name="bskSat0_thr_7" site="bskSat0_thr_7" gear="0 -1 0 0 0 0"/>
+        <motor name="bskSat0_thr_8" site="bskSat0_thr_8" gear="0 0 1 0 0 0"/>
+        <motor name="bskSat0_thr_9" site="bskSat0_thr_9" gear="0 0 -1 0 0 0"/>
+        <motor name="bskSat0_thr_10" site="bskSat0_thr_10" gear="0 0 1 0 0 0"/>
+        <motor name="bskSat0_thr_11" site="bskSat0_thr_11" gear="0 0 -1 0 0 0"/>
+        
+        <!-- Thrusters for Spacecraft 1 -->
+        <motor name="bskSat1_thr_0" site="bskSat1_thr_0" gear="1 0 0 0 0 0"/>
+        <motor name="bskSat1_thr_1" site="bskSat1_thr_1" gear="-1 0 0 0 0 0"/>
+        <motor name="bskSat1_thr_2" site="bskSat1_thr_2" gear="1 0 0 0 0 0"/>
+        <motor name="bskSat1_thr_3" site="bskSat1_thr_3" gear="-1 0 0 0 0 0"/>
+        <motor name="bskSat1_thr_4" site="bskSat1_thr_4" gear="0 1 0 0 0 0"/>
+        <motor name="bskSat1_thr_5" site="bskSat1_thr_5" gear="0 -1 0 0 0 0"/>
+        <motor name="bskSat1_thr_6" site="bskSat1_thr_6" gear="0 1 0 0 0 0"/>
+        <motor name="bskSat1_thr_7" site="bskSat1_thr_7" gear="0 -1 0 0 0 0"/>
+        <motor name="bskSat1_thr_8" site="bskSat1_thr_8" gear="0 0 1 0 0 0"/>
+        <motor name="bskSat1_thr_9" site="bskSat1_thr_9" gear="0 0 -1 0 0 0"/>
+        <motor name="bskSat1_thr_10" site="bskSat1_thr_10" gear="0 0 1 0 0 0"/>
+        <motor name="bskSat1_thr_11" site="bskSat1_thr_11" gear="0 0 -1 0 0 0"/>
+
+        <!-- Add more thrusters for additional spacecraft here -->
+    </actuator>
+</mujoco>
