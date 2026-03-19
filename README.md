@@ -49,6 +49,11 @@ https://arxiv.org/abs/2512.09833
 - [Basilisk](https://avslab.github.io/basilisk/Install.html)
 - ROS 2 (e.g. [Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html), [Rolling](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html))
 
+If you want to run the MuJoCo example scenario, Basilisk must be built with MuJoCo support:
+```bash
+python3 conanfile.py --mujoco True
+```
+
 After installation of **Basilisk**, it is recommended to export the user path of Basilisk to `.bashrc` as:
 ```bash
 export BSK_PATH=your_BSK_path
@@ -64,7 +69,7 @@ git clone https://github.com/DISCOWER/bsk-msgs.git
 git clone https://github.com/DISCOWER/bsk-ros2-bridge.git
 git clone https://github.com/DISCOWER/bsk-ros2-mpc.git
 cd ..
-colcon build bsk-msgs bsk-ros2-bridge
+colcon build bsk-ros2-bridge bsk-msgs bsk-ros2-mpc
 source install/setup.bash
 
 pip install -r src/bsk-ros2-bridge/requirements.txt
@@ -78,12 +83,12 @@ ros2 launch bsk-ros2-bridge bridge.launch.py
 
 # Terminal 2: start a Basilisk scenario (requires the BSK environment)
 source $BSK_PATH/.venv/bin/activate
-python examples/scenarioRosBasic_wrench.py
+python examples/scenarioRosOrbit_wrench.py
 
 # Terminal 3: start a controller (e.g., BSK-ROS2-MPC)
-ros2 launch bsk-ros2-mpc mpc.launch.py namespace:=bskSat0 type:=wrench use_hill:=False
+ros2 launch bsk-ros2-mpc mpc.launch.py namespace:=bskSat0 type:=wrench use_hill:=True use_rviz:=True
 ```
-Note: In the basic example scenario, no orbit dynamics are present and the example MPC needs the launch argument `use_hill:=False`. Set to `True` for one of the orbit examples.
+Note: This example uses an orbit scenario, hence the MPC launch argument `use_hill:=True` (Hill frame). For the basic no-orbit scenarios, set `use_hill:=False`.
 
 For closed-loop control, see the [BSK-ROS 2 MPC Controller](https://github.com/DISCOWER/bsk-ros2-mpc).
 
@@ -97,10 +102,22 @@ For closed-loop control, see the [BSK-ROS 2 MPC Controller](https://github.com/D
 | `scenarioRosOrbit_wrench.py` | Spacecraft orbiting Earth | `wrench` |
 | `scenarioRosLeaderFollowerBasic_wrench.py` | 1 leader + 2 followers (no Earth) | `wrench` |
 | `scenarioRosLeaderFollowerOrbit_wrench.py` | 1 leader + 2 followers (orbit) | `wrench` |
+| `scenarioRosMujoco_wrench.py` | Two satellites on a collision course with MuJoCo multibody dynamics | `wrench` |
 
 **Control modes:** `da` (direct allocation) commands individual thrusters via `/<ns>/bsk/in/thr_array_cmd_force`. `wrench` commands 3D forces and torques via `/<ns>/bsk/in/cmd_force` and `/<ns>/bsk/in/cmd_torque`, mapped to thrusters by Basilisk.
 
 The orbit scenarios support any number of spacecraft. Launch one controller per namespace (e.g., `/bskSat0`, `/bskSat1`).
+
+#### MuJoCo Scenario
+
+The MuJoCo example (`scenarioRosMujoco_wrench.py`) is a scenario that simulates two satellites on a collision course and uses MuJoCo for multi-joint and contact dynamics.
+
+To run this scenario, ensure Basilisk was built with MuJoCo support:
+```bash
+python3 conanfile.py --mujoco True
+```
+
+Just like the other examples, the spacecraft in this MuJoCo scenario are actuated, and can be controlled with, e.g., [bsk-ros2-mpc](https://github.com/DISCOWER/bsk-ros2-mpc).
 
 ## Development Guide
 
