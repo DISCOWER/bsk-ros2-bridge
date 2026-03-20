@@ -7,24 +7,28 @@ else:
 path = os.path.dirname(os.path.abspath(filename))
 sys.path.append(os.path.join(path, '..'))
 
-from Basilisk import __path__
-from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch, vizInterface
+from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster
-from Basilisk.fswAlgorithms import thrFiringSchmitt, forceTorqueThrForceMapping
+from Basilisk.fswAlgorithms import thrFiringSchmitt
 from Basilisk.architecture import bskLogging, sysModel, messaging
 from bsk_module.rosBridgeHandler import RosBridgeHandler
+from examples.modules import forceTorqueThrForceMapping
 
-def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, fswTimeStep=0.1):
+def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, thrRate=10.0, vizRate=30.0):
     # --- Set up simulation classes and processes ---
     scSim = SimulationBaseClass.SimBaseClass()
     simTaskName = "simTask"
-    fswTaskName = "fswTask"
+    thrTaskName = "thrTask"
+    vizTaskName = "vizTask"
     simProcess = scSim.CreateNewProcess("simProcess", 100)
-    fswProcess = scSim.CreateNewProcess("fswProcess", 200)
+    thrProcess = scSim.CreateNewProcess("thrProcess", 200)
+    vizProcess = scSim.CreateNewProcess("vizProcess", 50)
     simTimeStep = macros.sec2nano(simTimeStep)
     simProcess.addTask(scSim.CreateNewTask(simTaskName, simTimeStep))
-    fswTimeStep = macros.sec2nano(fswTimeStep)
-    fswProcess.addTask(scSim.CreateNewTask(fswTaskName, fswTimeStep))
+    thrTimeStep = macros.sec2nano(1.0 / thrRate)
+    thrProcess.addTask(scSim.CreateNewTask(thrTaskName, thrTimeStep))
+    vizTimeStep = macros.sec2nano(1.0 / vizRate)
+    vizProcess.addTask(scSim.CreateNewTask(vizTaskName, vizTimeStep))
 
     # --- Create the ROS 2 bridge handler ---
     ros_bridge = RosBridgeHandler(accelFactor=accelFactor)
@@ -74,12 +78,13 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
             cutoffFrequency=3141.6,
             MinOnTime=0.0,
         )
-    thFactory.addToSpacecraft("ThrusterDynamics", thrusterSet, scObject)
-    fswThrConfigMsg = thFactory.getConfigMessage()
+    thFactory.addToSpacecraft(scObject.ModelTag, thrusterSet, scObject)
+    thrConfigMsg = thFactory.getConfigMessage()
     
     # Setup force/torque to thruster mapping
     thrForceMapping = forceTorqueThrForceMapping.forceTorqueThrForceMapping()
     thrForceMapping.ModelTag = "thrForceMapping"
+    thrForceMapping.setThrusterGeometryFromDefs(thruster_defs)
     
     # Setup ROS bridge - Set up subscribers and publishers
     ros_bridge.add_ros_subscriber('CmdForceBodyMsgPayload', 'CmdForceBodyMsgOut', 'cmd_force', scName[0])
@@ -107,36 +112,38 @@ def run(liveStream=True, broadcastStream=True, simTimeStep=0.1, simTime=60.0, ac
     ros_bridge_i.THRArrayCmdForceMsgIn.subscribeTo(thrForceMapping.thrForceCmdOutMsg)
 
     # Connect force/torque mapping
-    thrForceMapping.thrConfigInMsg.subscribeTo(fswThrConfigMsg)
+    thrForceMapping.thrConfigInMsg.subscribeTo(thrConfigMsg)
     thrForceMapping.vehConfigInMsg.subscribeTo(vcMsg)
     thrForceMapping.cmdForceInMsg.subscribeTo(ros_bridge_i.CmdForceBodyMsgOut)
     thrForceMapping.cmdTorqueInMsg.subscribeTo(ros_bridge_i.CmdTorqueBodyMsgOut)
     
     # Connect thruster logic
-    thrFiringSchmittObj.thrConfInMsg.subscribeTo(fswThrConfigMsg)
+    thrFiringSchmittObj.thrConfInMsg.subscribeTo(thrConfigMsg)
     thrFiringSchmittObj.thrForceInMsg.subscribeTo(thrForceMapping.thrForceCmdOutMsg)
     thrusterSet.cmdsInMsg.subscribeTo(thrFiringSchmittObj.onTimeOutMsg)
 
     # --- Add models to simulation tasks ---
-    scSim.AddModelToTask(simTaskName, thrusterSet, 10)
-    scSim.AddModelToTask(simTaskName, scObject, 10)
-    scSim.AddModelToTask(simTaskName, ros_bridge, 100)
+    # Higher priority value -> earlier execution in the same sim step
+    scSim.AddModelToTask(simTaskName, scObject, 80)
+    scSim.AddModelToTask(simTaskName, thrusterSet, 60)
+    scSim.AddModelToTask(simTaskName, ros_bridge, 1)
     
-    scSim.AddModelToTask(fswTaskName, thrForceMapping, 20)
-    scSim.AddModelToTask(fswTaskName, thrFiringSchmittObj, 10)
+    scSim.AddModelToTask(thrTaskName, thrForceMapping, 20)
+    scSim.AddModelToTask(thrTaskName, thrFiringSchmittObj, 10)
     
     # --- Set up Vizard support ---
     if vizSupport.vizFound:
-        scData = vizInterface.VizSpacecraftData()
-        scData.spacecraftName = scObject.ModelTag
-        scData.scStateInMsg.subscribeTo(scObject.scStateOutMsg)
-            
         clockSync = simSynch.ClockSynch()
         clockSync.accelFactor = accelFactor
-        scSim.AddModelToTask(simTaskName, clockSync)
-        
-        viz = vizSupport.enableUnityVisualization(scSim, simTaskName, scObject,
-                              liveStream=liveStream, broadcastStream=broadcastStream)
+        scSim.AddModelToTask(vizTaskName, clockSync)
+
+        viz = vizSupport.enableUnityVisualization(
+            scSim,
+            vizTaskName,
+            scObject,
+            liveStream=liveStream,
+            broadcastStream=broadcastStream,
+        )
         vizSupport.createCustomModel(viz, simBodiesToModify=[scObject.ModelTag],
                                     modelPath='bskSat', scale=[0.1]*3)
             
@@ -153,8 +160,7 @@ if __name__ == "__main__":
     run(
         liveStream=True,
         broadcastStream=False,
-        simTimeStep=1/50.,
+        simTimeStep=1/500.,
         simTime=3600.0,
         accelFactor=1.0,
-        fswTimeStep=1/10.
     )

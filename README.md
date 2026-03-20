@@ -102,17 +102,13 @@ For closed-loop control, see the [BSK-ROS 2 MPC Controller](https://github.com/D
 | `scenarioRosOrbit_wrench.py` | Spacecraft orbiting Earth | `wrench` |
 | `scenarioRosLeaderFollowerBasic_wrench.py` | 1 leader + 2 followers (no Earth) | `wrench` |
 | `scenarioRosLeaderFollowerOrbit_wrench.py` | 1 leader + 2 followers (orbit) | `wrench` |
-| `scenarioRosMujoco_wrench.py` | Two satellites on a collision course with MuJoCo multibody dynamics | `wrench` |
+| `mujoco/scenarioRosMujoco_wrench.py` | Two satellites on a collision course with MuJoCo multibody dynamics | `wrench` |
 
 **Control modes:** `da` (direct allocation) commands individual thrusters via `/<ns>/bsk/in/thr_array_cmd_force`. `wrench` commands 3D forces and torques via `/<ns>/bsk/in/cmd_force` and `/<ns>/bsk/in/cmd_torque`, mapped to thrusters by Basilisk.
 
-The orbit scenarios support any number of spacecraft. Launch one controller per namespace (e.g., `/bskSat0`, `/bskSat1`).
+The orbit scenarios support any number of spacecraft. Launch one controller per namespace (e.g., `/bskSat0`, `/bskSat1`). All spacecraft models used in the scenarios are based on [ATMOS](https://atmos.discower.io/) in terms of size, thruster configuration, and inertia properties.
 
-#### MuJoCo Scenario
-
-The MuJoCo example (`scenarioRosMujoco_wrench.py`) is a scenario that simulates two satellites on a collision course and uses MuJoCo for multi-joint and contact dynamics.
-
-To run this scenario, ensure Basilisk was built with MuJoCo support:
+The MuJoCo example (`mujoco/scenarioRosMujoco_wrench.py`) is a scenario that simulates two satellites on a collision course and uses MuJoCo for multi-joint and contact dynamics. To run this scenario, ensure Basilisk was built with MuJoCo support:
 ```bash
 python3 conanfile.py --mujoco True
 ```
