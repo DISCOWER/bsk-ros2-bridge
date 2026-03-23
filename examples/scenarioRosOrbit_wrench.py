@@ -73,12 +73,10 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
     # Number of spacecraft are defined by relative positions in Hill frame
     relative_positions = [
         [0, 0, 0],
-        [3, 0, 0],
-        # [-3, 0, 0],
-        # [0, 3, 0],
-        # [0, -3, 0],
-        # [0, 0, 3],
-        # [0, 0, -3],
+        [0, 3, 0],
+        [0, -3, 0],
+        [0, 0, 3],
+        [0, 0, -3],
     ]
     num_spacecraft = len(relative_positions)
 

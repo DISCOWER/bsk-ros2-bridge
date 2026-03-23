@@ -32,16 +32,6 @@ https://arxiv.org/abs/2512.09833
 ```
 </details>
 
-## Tested Configurations
-
-| Environment | ROS 2 Distro | Notes |
-|---|---|---|
-| Ubuntu 22.04 LTS | Humble | Full build, CLI tools, and launch files tested |
-| Ubuntu 24.04 LTS | Jazzy | Full build, CLI tools, and launch files tested |
-| Windows (WSL, Ubuntu 24.04) | Rolling | Build and topic communication verified |
-
-> **WSL note:** Locale settings may need correction ([see ROS 2 docs](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html#set-locale)). Minor GUI latency (e.g., BSK-Vizard) is expected; CLI tools work normally.
-
 ## Quick Start
 
 ### Prerequisites
@@ -67,9 +57,8 @@ In order to visualize the results of the simulations make sure you install [Viza
 cd your_ros2_workspace/src
 git clone https://github.com/DISCOWER/bsk-msgs.git
 git clone https://github.com/DISCOWER/bsk-ros2-bridge.git
-git clone https://github.com/DISCOWER/bsk-ros2-mpc.git
 cd ..
-colcon build bsk-ros2-bridge bsk-msgs bsk-ros2-mpc
+colcon build --packages-up-to bsk-ros2-bridge
 source install/setup.bash
 
 pip install -r src/bsk-ros2-bridge/requirements.txt
@@ -77,20 +66,29 @@ pip install -r src/bsk-ros2-bridge/requirements.txt
 
 ### Run an Example
 
+Terminal 1: Start the bridge
 ```bash
-# Terminal 1: start the bridge
 ros2 launch bsk-ros2-bridge bridge.launch.py
+```
 
-# Terminal 2: start a Basilisk scenario (requires the BSK environment)
+Terminal 2: Start a Basilisk scenario (requires the BSK environment)
+```bash
 source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosOrbit_wrench.py
-
-# Terminal 3: start a controller (e.g., BSK-ROS2-MPC)
-ros2 launch bsk-ros2-mpc mpc.launch.py namespace:=bskSat0 type:=wrench use_hill:=True use_rviz:=True
 ```
-Note: This example uses an orbit scenario, hence the MPC launch argument `use_hill:=True` (Hill frame). For the basic no-orbit scenarios, set `use_hill:=False`.
 
-For closed-loop control, see the [BSK-ROS 2 MPC Controller](https://github.com/DISCOWER/bsk-ros2-mpc).
+Terminal 3: Verify topics
+```bash
+ros2 topic list
+```
+
+### Closed-Loop Control Example
+To run the scenario with closed-loop control, you can use the [Basilisk-ROS 2 MPC](https://github.com/DISCOWER/bsk-ros2-mpc). 
+
+Once the MPC controller is installed and sourced in your workspace, start it in a new terminal:
+```bash
+ros2 launch bsk-ros2-mpc mpc.launch.py namespace:=bskSat0
+```
 
 ### Example Scenarios
 
@@ -104,9 +102,13 @@ For closed-loop control, see the [BSK-ROS 2 MPC Controller](https://github.com/D
 | `scenarioRosLeaderFollowerOrbit_wrench.py` | 1 leader + 2 followers (orbit) | `wrench` |
 | `mujoco/scenarioRosMujoco_wrench.py` | Two satellites on a collision course with MuJoCo multibody dynamics | `wrench` |
 
-**Control modes:** `da` (direct allocation) commands individual thrusters via `/<ns>/bsk/in/thr_array_cmd_force`. `wrench` commands 3D forces and torques via `/<ns>/bsk/in/cmd_force` and `/<ns>/bsk/in/cmd_torque`, mapped to thrusters by Basilisk.
+**Notes:** 
 
-The orbit scenarios support any number of spacecraft. Launch one controller per namespace (e.g., `/bskSat0`, `/bskSat1`). All spacecraft models used in the scenarios are based on [ATMOS](https://atmos.discower.io/) in terms of size, thruster configuration, and inertia properties.
+`da` (direct allocation) commands individual thrusters via `/<ns>/bsk/in/thr_array_cmd_force`. `wrench` commands 3D forces and torques via `/<ns>/bsk/in/cmd_force` and `/<ns>/bsk/in/cmd_torque`, mapped to thrusters by Basilisk.
+
+The orbit scenarios support any number of spacecraft. Launch one controller per namespace (e.g., `/bskSat0`, `/bskSat1`).
+
+All spacecraft models used in the scenarios are based on [ATMOS](https://atmos.discower.io/) in terms of size, thruster configuration, and inertia properties.
 
 The MuJoCo example (`mujoco/scenarioRosMujoco_wrench.py`) is a scenario that simulates two satellites on a collision course and uses MuJoCo for multi-joint and contact dynamics. To run this scenario, ensure Basilisk was built with MuJoCo support:
 ```bash
@@ -216,6 +218,16 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 | `receive_port` | 5551 | ZMQ port for receiving data from bridge (ROS 2 → BSK) |
 | `heartbeat_port` | 5552 | ZMQ port for heartbeat monitoring |
 | `accelFactor` | NaN | Simulation speed factor; set to enable `/clock` publishing |
+
+## Tested Configurations
+
+| Environment | ROS 2 Distro | Notes |
+|---|---|---|
+| Ubuntu 22.04 LTS | Humble | Full build, CLI tools, and launch files tested |
+| Ubuntu 24.04 LTS | Jazzy | Full build, CLI tools, and launch files tested |
+| Windows (WSL, Ubuntu 24.04) | Rolling | Build and topic communication verified |
+
+> **WSL note:** Locale settings may need correction ([see ROS 2 docs](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html#set-locale)). Minor GUI latency (e.g., BSK-Vizard) is expected; CLI tools work normally.
 
 ## Troubleshooting
 
