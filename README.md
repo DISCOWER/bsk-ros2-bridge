@@ -122,7 +122,7 @@ Just like the other examples, the spacecraft in this MuJoCo scenario are actuate
 ### Integrating `RosBridgeHandler` in a Scenario
 
 ```python
-from bsk_module.rosBridgeHandler import RosBridgeHandler
+from bsk_ros2_bridge.rosBridgeHandler import RosBridgeHandler
 
 ros_bridge = RosBridgeHandler()
 ros_bridge.ModelTag = "ros_bridge"
@@ -228,6 +228,36 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 | Windows (WSL, Ubuntu 24.04) | Rolling | Build and topic communication verified |
 
 > **WSL note:** Locale settings may need correction ([see ROS 2 docs](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html#set-locale)). Minor GUI latency (e.g., BSK-Vizard) is expected; CLI tools work normally.
+
+## Creating your own package of scenarios
+
+If you want to create your own ROS 2 package with custom scenarios using the provided scenarios in the `examples/` directory as templates, you need to install the `bsk_ros2_bridge` package in your Basilisk virtual environment.
+
+First, open a terminal and navigate to the root of your ROS 2 workspace:
+
+```bash
+cd my_ros2_wk/src/bsk-ros2-bridge
+```
+Then, activate your Basilisk virtual environment:
+```bash
+source $BSK_PATH/.venv/bin/activate
+```
+Install bsk_ros2_bridge in editable mode:
+```python
+uv pip install -e .
+```
+
+You are now ready to use the bridge in your own package. For example, in a new ROS 2 package called `my-fancy-package`, you can import the bridge as:
+
+```python
+from bsk_ros2_bridge.rosBridgeHandler import RosBridgeHandler
+```
+
+> [!NOTE]
+> You must activate the virtual environment whenever you want to run > scenarios that depend on this package.
+
+
+
 
 ## Troubleshooting
 
