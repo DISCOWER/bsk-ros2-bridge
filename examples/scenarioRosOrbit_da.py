@@ -11,7 +11,7 @@ from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch, s
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, simIncludeGravBody, orbitalMotion
 from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter, hillPoint, attTrackingError
 from Basilisk.architecture import bskLogging, sysModel, messaging
-from bsk_module.rosBridgeHandler import RosBridgeHandler
+from bsk_ros2_bridge.rosBridgeHandler import RosBridgeHandler
 from examples.utils.tools import get_initial_conditions_from_hill, get_hill_frame_attitude
 
 def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, thrRate=10.0, vizRate=30.0):
