@@ -14,20 +14,22 @@ The bridge supports single- and multi-spacecraft scenarios using namespace-aware
 
 If you use this package in academic work, please cite:
 
-E. Krantz, N. N. Chan, G. Tibert, H. Mao, C. Fuglesang,
-*Bridging the Basilisk Astrodynamics Framework with ROS 2 for Modular Spacecraft Simulation and Hardware Integration*,
-arXiv preprint arXiv:2512.09833, 2025.
-https://arxiv.org/abs/2512.09833
+E. Krantz, N. N. Chan, G. Tibert, H. Mao and C. Fuglesang,
+"Bridging the Basilisk Astrodynamics Framework with ROS 2 for Modular Spacecraft Simulation and Hardware Integration,"
+*2025 International Conference on Space Robotics (iSpaRo)*, Sendai, Japan, 2025, doi: 10.1109/iSpaRo66239.2025.11437323.
+
+[IEEE Xplore](https://ieeexplore.ieee.org/document/11437323) | [arXiv](https://arxiv.org/abs/2512.09833)
 
 <details>
 <summary>BibTeX</summary>
-
 ```bibtex
-@article{krantz2025bridging,
+@inproceedings{krantz2025bridging,
   title={Bridging the Basilisk Astrodynamics Framework with ROS 2 for Modular Spacecraft Simulation and Hardware Integration},
   author={Krantz, Elias and Chan, Ngai Nam and Tibert, Gunnar and Mao, Huina and Fuglesang, Christer},
-  journal={arXiv preprint arXiv:2512.09833},
-  year={2025}
+  booktitle={2025 International Conference on Space Robotics (iSpaRo)},
+  year={2025},
+  organization={IEEE},
+  doi={10.1109/iSpaRo66239.2025.11437323}
 }
 ```
 </details>
