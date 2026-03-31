@@ -22,8 +22,8 @@ E. Krantz, N. N. Chan, G. Tibert, H. Mao and C. Fuglesang,
 
 <details>
 <summary>BibTeX</summary>
-```bibtex
-@inproceedings{krantz2025bridging,
+
+<pre><code>@inproceedings{krantz2025bridging,
   title={Bridging the Basilisk Astrodynamics Framework with ROS 2 for Modular Spacecraft Simulation and Hardware Integration},
   author={Krantz, Elias and Chan, Ngai Nam and Tibert, Gunnar and Mao, Huina and Fuglesang, Christer},
   booktitle={2025 International Conference on Space Robotics (iSpaRo)},
@@ -31,7 +31,8 @@ E. Krantz, N. N. Chan, G. Tibert, H. Mao and C. Fuglesang,
   organization={IEEE},
   doi={10.1109/iSpaRo66239.2025.11437323}
 }
-```
+</code></pre>
+
 </details>
 
 ## Quick Start
