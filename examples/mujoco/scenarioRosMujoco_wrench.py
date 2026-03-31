@@ -12,9 +12,9 @@ from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch, s
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, simIncludeThruster, simIncludeGravBody, orbitalMotion
 from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter, hillPoint, attTrackingError
 from Basilisk.architecture import bskLogging, sysModel, messaging
-from bsk_module.rosBridgeHandler import RosBridgeHandler
+from bsk_ros2_bridge import RosBridgeHandler
+from bsk_ros2_bridge.modules import forceTorqueThrForceMapping
 from examples.utils.tools import get_hill_frame_attitude, get_initial_conditions_from_hill
-from examples.modules import forceTorqueThrForceMapping
 
 # MuJoCo XML file path
 CURRENT_FOLDER = os.path.dirname(__file__)
@@ -188,7 +188,7 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
         thrusterActuatorMsgs.append(scThrusterMsgs)
         
         # Setup force/torque to thruster mapping
-        thrForceMapping_i = forceTorqueThrForceMapping.forceTorqueThrForceMapping()
+        thrForceMapping_i = forceTorqueThrForceMapping()
         thrForceMapping_i.ModelTag = f"thrForceMapping{i}"
         thrForceMapping_i.setThrusterGeometryFromDefs(thruster_defs)
         thrForceMapping.append(thrForceMapping_i)

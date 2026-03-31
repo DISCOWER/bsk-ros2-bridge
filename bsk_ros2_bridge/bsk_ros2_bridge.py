@@ -19,8 +19,8 @@ import numpy as np
 # =============================================================================
 # COMMUNICATION CONFIGURATION
 # =============================================================================
-DEFAULT_SUB_PORT = 5550              # Receive telemetry from Basilisk
-DEFAULT_PUB_PORT = 5551              # Send commands to Basilisk  
+DEFAULT_PUB_PORT = 5550              # Receive telemetry from Basilisk
+DEFAULT_SUB_PORT = 5551              # Send commands to Basilisk  
 DEFAULT_HEARTBEAT_PORT = 5552        # Connection health monitoring
 HEARTBEAT_INTERVAL_SEC = 0.1         # Keep-alive frequency
 DEFAULT_ROS_CLOCK_TIMESTEP = 0.01    # Default ROS clock update interval
@@ -100,7 +100,7 @@ class BskRosBridge(Node):
         self.clock_timer = None
         
         self.get_logger().info(
-            f"BSK-ROS2 Bridge ready on ports {self.sub_port}/{self.pub_port}/{self.heartbeat_port}"
+            f"BSK-ROS2 Bridge ready on ports {self.pub_port}/{self.sub_port}/{self.heartbeat_port}"
         )
 
     # =========================================================================
@@ -109,13 +109,13 @@ class BskRosBridge(Node):
     
     def _setup_parameters(self):
         """Configure ROS parameters for port settings."""
-        self.declare_parameter('sub_port', DEFAULT_SUB_PORT)
         self.declare_parameter('pub_port', DEFAULT_PUB_PORT)
+        self.declare_parameter('sub_port', DEFAULT_SUB_PORT)
         self.declare_parameter('heartbeat_port', DEFAULT_HEARTBEAT_PORT)
         self.declare_parameter('ros_clock_timestep', DEFAULT_ROS_CLOCK_TIMESTEP)
 
-        self.sub_port = self.get_parameter('sub_port').get_parameter_value().integer_value
         self.pub_port = self.get_parameter('pub_port').get_parameter_value().integer_value
+        self.sub_port = self.get_parameter('sub_port').get_parameter_value().integer_value
         self.heartbeat_port = self.get_parameter('heartbeat_port').get_parameter_value().integer_value
         self.ros_clock_timestep = self.get_parameter('ros_clock_timestep').get_parameter_value().double_value
 
@@ -152,7 +152,7 @@ class BskRosBridge(Node):
         """
         # Subscriber: Receive telemetry from BSK
         self.sub_socket = self.zmq_context.socket(zmq.SUB)
-        self.sub_socket.connect(f"tcp://localhost:{self.sub_port}")
+        self.sub_socket.connect(f"tcp://localhost:{self.pub_port}")
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")  # Subscribe to all messages
         self.sub_socket.setsockopt(zmq.CONFLATE, 1)           # Keep only latest message
         self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)         # 100ms receive timeout
@@ -160,7 +160,7 @@ class BskRosBridge(Node):
 
         # Publisher: Send commands to BSK
         self.pub_socket = self.zmq_context.socket(zmq.PUB)
-        self.pub_socket.bind(f"tcp://*:{self.pub_port}")
+        self.pub_socket.bind(f"tcp://*:{self.sub_port}")
         self.pub_socket.setsockopt(zmq.LINGER, 0)             # No blocking on close
         self.pub_socket.setsockopt(zmq.SNDHWM, 50)            # Send buffer limit
         self.pub_socket.setsockopt(zmq.IMMEDIATE, 1)          # Immediate delivery

@@ -53,15 +53,34 @@ In order to visualize the results of the simulations make sure you install [Viza
 
 ### Install
 
+1. Clone the repos:
 ```bash
-cd your_ros2_workspace/src
+cd <your_ros2_workspace>/src
 git clone https://github.com/DISCOWER/bsk-msgs.git
 git clone https://github.com/DISCOWER/bsk-ros2-bridge.git
-cd ..
+```
+
+2. Install the Basilisk bridge handler module `rosBridgeHandler`:
+```bash
+# Source your Basilisk environment
+source $BSK_PATH/.venv/bin/activate
+# Navigate to the bridge directory
+cd <your_ros2_workspace>/src/bsk-ros2-bridge
+# Install the bridge handler module
+pip install -e .
+# Deactivate your Basilisk environment before step 3
+deactivate
+```
+
+3. Install the ROS 2 bridge package:
+```bash
+# Navigate to your ROS 2 workspace
+cd <your_ros2_workspace>
+# Install required python packages
+pip install -r src/bsk-ros2-bridge/requirements.txt
+# Build the ROS 2 bridge package and its dependencies
 colcon build --packages-up-to bsk-ros2-bridge
 source install/setup.bash
-
-pip install -r src/bsk-ros2-bridge/requirements.txt
 ```
 
 ### Run an Example
@@ -122,7 +141,7 @@ Just like the other examples, the spacecraft in this MuJoCo scenario are actuate
 ### Integrating `RosBridgeHandler` in a Scenario
 
 ```python
-from bsk_ros2_bridge.rosBridgeHandler import RosBridgeHandler
+from bsk_ros2_bridge import RosBridgeHandler
 
 ros_bridge = RosBridgeHandler()
 ros_bridge.ModelTag = "ros_bridge"
@@ -194,8 +213,8 @@ This configuration prioritizes low-latency communication and ensures that only t
 **Bridge launch arguments:**
 | Argument | Default | Description |
 |---|---|---|
-| `sub_port` | 5550 | ZMQ port: Basilisk → Bridge |
-| `pub_port` | 5551 | ZMQ port: Bridge → Basilisk |
+| `pub_port` | 5550 | ZMQ port: Basilisk → Bridge |
+| `sub_port` | 5551 | ZMQ port: Bridge → Basilisk |
 | `heartbeat_port` | 5552 | ZMQ heartbeat port |
 | `clock_timestep` | 0.01 | Clock update interval (s) |
 | `namespace` | `''` | Bridge namespace |
@@ -203,7 +222,7 @@ This configuration prioritizes low-latency communication and ensures that only t
 To set custom ports:
 
 ```bash
-ros2 launch bsk-ros2-bridge bridge.launch.py sub_port:=6550 pub_port:=6551 heartbeat_port:=6552
+ros2 launch bsk-ros2-bridge bridge.launch.py pub_port:=6550 sub_port:=6551 heartbeat_port:=6552
 ```
 
 ```python
@@ -228,36 +247,6 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 | Windows (WSL, Ubuntu 24.04) | Rolling | Build and topic communication verified |
 
 > **WSL note:** Locale settings may need correction ([see ROS 2 docs](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html#set-locale)). Minor GUI latency (e.g., BSK-Vizard) is expected; CLI tools work normally.
-
-## Creating your own package of scenarios
-
-If you want to create your own ROS 2 package with custom scenarios using the provided scenarios in the `examples/` directory as templates, you need to install the `bsk_ros2_bridge` package in your Basilisk virtual environment.
-
-First, open a terminal and navigate to the root of your ROS 2 workspace:
-
-```bash
-cd my_ros2_wk/src/bsk-ros2-bridge
-```
-Then, activate your Basilisk virtual environment:
-```bash
-source $BSK_PATH/.venv/bin/activate
-```
-Install bsk_ros2_bridge in editable mode:
-```python
-uv pip install -e .
-```
-
-You are now ready to use the bridge in your own package. For example, in a new ROS 2 package called `my-fancy-package`, you can import the bridge as:
-
-```python
-from bsk_ros2_bridge.rosBridgeHandler import RosBridgeHandler
-```
-
-> [!NOTE]
-> You must activate the virtual environment whenever you want to run > scenarios that depend on this package.
-
-
-
 
 ## Troubleshooting
 

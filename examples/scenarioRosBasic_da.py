@@ -11,7 +11,7 @@ from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster
 from Basilisk.fswAlgorithms import thrFiringSchmitt
 from Basilisk.architecture import bskLogging, sysModel
-from bsk_ros2_bridge.rosBridgeHandler import RosBridgeHandler
+from bsk_ros2_bridge import RosBridgeHandler
 
 def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, thrRate=10.0, vizRate=30.0):
     # --- Set up simulation classes and processes ---
