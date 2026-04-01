@@ -255,14 +255,17 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 
 **Missing message types**: ensure `bsk_msgs` is built and sourced.
 
-**Port conflicts**: check with `lsof -i :5550` and kill occupied ports if needed.
+**Connection issues**: ensure the bridge is running, verify BSK environment is activated.
 
-**Connection issues**: ensure bridge is running, verify BSK environment is activated.
+**Missing rosBridgeHandler**: ensure you have installed the package in your BSK environment (see Installation step 2).
+
+**Port conflicts**: check with `lsof -i :5550` and kill any processes using the port if needed.
 
 ## References
 
-- [Basilisk Astrodynamics Simulation](https://hanspeterschaub.info/basilisk/)
-- [ROS 2 Documentation](https://www.ros.org/)
-- [ZeroMQ Documentation](https://zeromq.org/)
 - [Basilisk-ROS 2 Messages](https://github.com/DISCOWER/bsk-msgs)
 - [Basilisk-ROS 2 MPC](https://github.com/DISCOWER/bsk-ros2-mpc)
+- [Basilisk: an Astrodynamics Simulation Framework](https://hanspeterschaub.info/basilisk/)
+- [Basilisk GitHub](https://github.com/AVSLab/basilisk)
+- [ROS 2 Documentation](https://www.ros.org/)
+- [ZeroMQ Documentation](https://zeromq.org/)
