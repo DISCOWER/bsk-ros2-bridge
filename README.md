@@ -143,25 +143,30 @@ Just like the other examples, the spacecraft in this MuJoCo scenario are actuate
 
 ### Integrating `RosBridgeHandler` in a Scenario
 
+A minimal setup looks like:
+
 ```python
+# Add RosBridgeHandler module
 from bsk_ros2_bridge import RosBridgeHandler
-
 ros_bridge = RosBridgeHandler()
-ros_bridge.ModelTag = "ros_bridge"
 
-# Add publishers (Basilisk → ROS 2)
-ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat', max_rate=100.0)
+# Add publisher (Basilisk → ROS 2)
+ros_bridge.add_ros_publisher('SCStatesMsgPayload', 'SCStatesMsgIn', 'sc_states', 'bskSat', max_rate=50.0)
 
-# Add subscribers (ROS 2 → Basilisk)  
-ros_bridge.add_ros_subscriber('THRArrayCmdForceMsgPayload', 'THRArrayCmdForceMsgOut', 'thr_array_cmd_force', 'bskSat')
+# Add subscriber (ROS 2 → Basilisk)  
+ros_bridge.add_ros_subscriber('CmdForceBodyMsgPayload', 'CmdForceBodyMsgOut', 'cmd_force', 'bskSat')
 
-# Connect to Basilisk messages
+# Connect messages to Basilisk modules
 ros_bridge.bskSat.SCStatesMsgIn.subscribeTo(scObject.scStateOutMsg)
-thrFiringSchmittObj.thrForceInMsg.subscribeTo(ros_bridge.bskSat.THRArrayCmdForceMsgOut)
+thrForceMapping.cmdForceInMsg.subscribeTo(ros_bridge.CmdForceBodyMsgOut)
 
 # Add the module to a simulation task
 scSim.AddModelToTask(simTaskName, ros_bridge)
 ```
+
+This would result in the following ROS 2 publisher and subscriber:  
+`/bskSat/bsk/out/sc_states`  
+`/bskSat/bsk/in/cmd_force`
 
 ### Registering ROS 2 Publishers and Subscribers
 
