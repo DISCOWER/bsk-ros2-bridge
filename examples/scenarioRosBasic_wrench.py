@@ -1,12 +1,3 @@
-import sys, inspect, os
-current_frame = inspect.currentframe()
-if current_frame is not None:
-    filename = inspect.getframeinfo(current_frame).filename
-else:
-    filename = __file__
-path = os.path.dirname(os.path.abspath(filename))
-sys.path.append(os.path.join(path, '..'))
-
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch
 from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster
 from Basilisk.fswAlgorithms import thrFiringSchmitt
@@ -14,24 +5,28 @@ from Basilisk.architecture import bskLogging, sysModel, messaging
 from bsk_ros2_bridge import RosBridgeHandler
 from bsk_ros2_bridge.modules import forceTorqueThrForceMapping
 
-def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, thrRate=10.0, vizRate=30.0):
+def run(liveStream=False, broadcastStream=False, simTime=60.0, simRate=100.0, thrRate=10.0, vizRate=30.0, accelFactor=1.0):
     # --- Set up simulation classes and processes ---
     scSim = SimulationBaseClass.SimBaseClass()
     simTaskName = "simTask"
     thrTaskName = "thrTask"
     vizTaskName = "vizTask"
-    simProcess = scSim.CreateNewProcess("simProcess", 100)
-    thrProcess = scSim.CreateNewProcess("thrProcess", 200)
+    simProcess = scSim.CreateNewProcess("simProcess", 200)
+    thrProcess = scSim.CreateNewProcess("thrProcess", 100)
     vizProcess = scSim.CreateNewProcess("vizProcess", 50)
-    simTimeStep = macros.sec2nano(simTimeStep)
+    simTimeStep = macros.sec2nano(1.0 / simRate)
     simProcess.addTask(scSim.CreateNewTask(simTaskName, simTimeStep))
     thrTimeStep = macros.sec2nano(1.0 / thrRate)
     thrProcess.addTask(scSim.CreateNewTask(thrTaskName, thrTimeStep))
-    vizTimeStep = macros.sec2nano(1.0 / vizRate)
+    vizTimeStep = macros.sec2nano(accelFactor / vizRate)
     vizProcess.addTask(scSim.CreateNewTask(vizTaskName, vizTimeStep))
+    
+    # --- Set up clock synchronization module ---
+    clockSync = simSynch.ClockSynch()
+    clockSync.accelFactor = accelFactor
 
     # --- Create the ROS 2 bridge handler ---
-    ros_bridge = RosBridgeHandler(accelFactor=accelFactor)
+    ros_bridge = RosBridgeHandler(accelFactor=accelFactor, requireBridge=True, clockSync=clockSync)
     ros_bridge.ModelTag = "ros_bridge"
     ros_bridge.bskLogger = sysModel.BSKLogger(bskLogging.BSK_DEBUG)
 
@@ -124,8 +119,9 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
 
     # --- Add models to simulation tasks ---
     # Higher priority value -> earlier execution in the same sim step
-    scSim.AddModelToTask(simTaskName, scObject, 80)
-    scSim.AddModelToTask(simTaskName, thrusterSet, 60)
+    scSim.AddModelToTask(simTaskName, clockSync, 1000)
+    scSim.AddModelToTask(simTaskName, thrusterSet, 80)
+    scSim.AddModelToTask(simTaskName, scObject, 60)
     scSim.AddModelToTask(simTaskName, ros_bridge, 1)
     
     scSim.AddModelToTask(thrTaskName, thrForceMapping, 20)
@@ -133,10 +129,6 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
     
     # --- Set up Vizard support ---
     if vizSupport.vizFound:
-        clockSync = simSynch.ClockSynch()
-        clockSync.accelFactor = accelFactor
-        scSim.AddModelToTask(vizTaskName, clockSync)
-
         viz = vizSupport.enableUnityVisualization(
             scSim,
             vizTaskName,
@@ -160,7 +152,7 @@ if __name__ == "__main__":
     run(
         liveStream=True,
         broadcastStream=False,
-        simTimeStep=1/500.,
-        simTime=3600.0,
+        simTime=1e6,
+        simRate=200.0,
         accelFactor=1.0,
     )

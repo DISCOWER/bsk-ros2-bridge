@@ -1,3 +1,4 @@
+# This scenario requires Basilisk to be built from source, and sourcing the Basilisk environment before running the script
 import sys, inspect, os
 current_frame = inspect.currentframe()
 if current_frame is not None:
@@ -20,21 +21,25 @@ from examples.utils.tools import get_hill_frame_attitude, get_initial_conditions
 CURRENT_FOLDER = os.path.dirname(__file__)
 XML_PATH = f"{CURRENT_FOLDER}/mujoco_setup/multi_spacecraft.xml"
 
-def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, accelFactor=1.0, thrRate=10.0, vizUpdateRate=30.0):
+def run(liveStream=False, broadcastStream=False, simTime=60.0, simRate=100.0, thrRate=10.0, vizRate=30.0, accelFactor=1.0):
     # --- Set up simulation classes and processes ---
     scSim = SimulationBaseClass.SimBaseClass()
     simTaskName = "simTask"
     thrTaskName = "thrTask"
     vizTaskName = "vizTask"
-    simProcess = scSim.CreateNewProcess("simProcess", 100)
-    thrProcess = scSim.CreateNewProcess("thrProcess", 200)
+    simProcess = scSim.CreateNewProcess("simProcess", 200)
+    thrProcess = scSim.CreateNewProcess("thrProcess", 100)
     vizProcess = scSim.CreateNewProcess("vizProcess", 50)
-    simTimeStep = macros.sec2nano(simTimeStep)
+    simTimeStep = macros.sec2nano(1.0 / simRate)
     simProcess.addTask(scSim.CreateNewTask(simTaskName, simTimeStep))
     thrTimeStep = macros.sec2nano(1.0 / thrRate)
     thrProcess.addTask(scSim.CreateNewTask(thrTaskName, thrTimeStep))
-    vizTimeStep = macros.sec2nano(1.0 / vizUpdateRate)
+    vizTimeStep = macros.sec2nano(accelFactor / vizRate)
     vizProcess.addTask(scSim.CreateNewTask(vizTaskName, vizTimeStep))
+    
+    # --- Set up clock synchronization module ---
+    clockSync = simSynch.ClockSynch()
+    clockSync.accelFactor = accelFactor
 
     # --- Create the ROS 2 bridge handler ---
     ros_bridge = RosBridgeHandler(accelFactor=accelFactor)
@@ -265,6 +270,7 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
 
     # --- Add models to simulation tasks ---
     # Higher priority value -> earlier execution in the same sim step
+    scSim.AddModelToTask(simTaskName, clockSync, 1000)
     scSim.AddModelToTask(simTaskName, scHillObj, 92)
     scSim.AddModelToTask(simTaskName, hillNavObj, 91)
     scSim.AddModelToTask(simTaskName, hillPointObj, 90)
@@ -272,8 +278,8 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
     scSim.AddModelToTask(simTaskName, ros_bridge, 1)
     for i in range(num_spacecraft):
         # Schedule Basilisk spacecraft + thruster dynamics to compute thruster transients.
-        scSim.AddModelToTask(simTaskName, scObject[i], 80)
-        scSim.AddModelToTask(simTaskName, thrusterSet[i], 60)
+        scSim.AddModelToTask(simTaskName, thrusterSet[i], 80)
+        scSim.AddModelToTask(simTaskName, scObject[i], 60)
 
         # Navigation pipeline driven by MuJoCo state outputs.
         scSim.AddModelToTask(simTaskName, scNavObj[i], 40)
@@ -284,11 +290,7 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
         scSim.AddModelToTask(thrTaskName, thrFiringSchmittObj[i], 10)
     
     # --- Set up Vizard support ---
-    if vizSupport.vizFound:                    
-        clockSync = simSynch.ClockSynch()
-        clockSync.accelFactor = accelFactor
-        scSim.AddModelToTask(vizTaskName, clockSync)
-        
+    if vizSupport.vizFound:       
         vizScList = [scHillObj] + [
             [f"bskSat{i}", mjBodies[i].getOrigin().stateOutMsg] for i in range(num_spacecraft)
         ]
@@ -324,11 +326,11 @@ def run(liveStream=False, broadcastStream=False, simTimeStep=0.1, simTime=60.0, 
     scSim.ExecuteSimulation()
 
     # Send Basilisk thruster outputs to MuJoCo actuators
-    for i in range(num_spacecraft):
-        for j in range(len(thruster_defs)):
-            thr_output = thrusterSet[i].thrusterOutMsgs[j].read()
-            thrust = max(0.0, thr_output.thrustForce)
-            thrusterActuatorMsgs[i][j].write(messaging.SingleActuatorMsgPayload(input=thrust))
+    # for i in range(num_spacecraft):
+    #     for j in range(len(thruster_defs)):
+    #         thr_output = thrusterSet[i].thrusterOutMsgs[j].read()
+    #         thrust = max(0.0, thr_output.thrustForce)
+    #         thrusterActuatorMsgs[i][j].write(messaging.SingleActuatorMsgPayload(input=thrust))
     
     # Main simulation loop with MuJoCo thruster control
     incrementalStopTime = simTimeStep
@@ -349,7 +351,7 @@ if __name__ == "__main__":
     run(
         liveStream=True,
         broadcastStream=False,
-        simTimeStep=1/500.,
-        simTime=3600.0,
+        simTime=1e6,
+        simRate=200.0,
         accelFactor=1.0,
     )

@@ -9,7 +9,7 @@ import Basilisk.architecture.messaging as messaging_pkg
 import zmq
 import threading
 import time
-import orjson  # Faster JSON processing than standard json
+import orjson
 import numpy as np
 import re
 
@@ -64,7 +64,7 @@ class RosBridgeHandler(sysModel.SysModel):
     _bsk_attrs_cache = {}
 
     def __init__(self, ModelTag="ros_bridge", send_port=5550, receive_port=5551, 
-                 heartbeat_port=5552, accelFactor=np.nan):
+                 heartbeat_port=5552, accelFactor=np.nan, requireBridge=False, clockSync=None):
         """
         Initialize ROS Bridge Handler.
 
@@ -74,11 +74,15 @@ class RosBridgeHandler(sysModel.SysModel):
             receive_port (int): ZMQ port for receiving data from bridge (ROS2 -> BSK)
             heartbeat_port (int): ZMQ port for heartbeat monitoring
             accelFactor (float): Simulation speed factor for time synchronization
+            requireBridge (bool): Whether to pause Basilisk simulation when connection is lost
+            clockSync (ClockSynch): Optional Basilisk clock synchronization module
         """
         super(RosBridgeHandler, self).__init__()
         
         # Simulation speed for time synchronization
         self.accelFactor = float(accelFactor)
+        self.requireBridge = bool(requireBridge)
+        self.clockSync = clockSync
 
         # Configuration
         self.ModelTag = ModelTag
@@ -222,6 +226,10 @@ class RosBridgeHandler(sysModel.SysModel):
 
     def _wait_for_bridge_connection(self):
         """Block until bridge heartbeat detected - ensures bridge is ready."""
+        if not self.requireBridge:
+            print(f"[{self.ModelTag}] No bridge connected. Bridge synchronization disabled.")
+            return
+
         print(f"[{self.ModelTag}] Waiting for bridge heartbeat...")
         
         while self.last_heartbeat_time is None:
@@ -570,9 +578,23 @@ class RosBridgeHandler(sysModel.SysModel):
         Args:
             CurrentSimNanos (int): Current simulation time in nanoseconds
         """
-        # Check bridge heartbeat health
-        if not self._check_bridge_health():
-            return
+        if self.requireBridge:
+            while not self._bridge_is_connected():
+                if not self._heartbeat_was_lost:
+                    print(f"[{self.ModelTag}] No bridge heartbeat for >1s! Pausing simulation.")
+                    self._heartbeat_was_lost = True
+                time.sleep(0.01)
+            if self._heartbeat_was_lost:
+                print(f"[{self.ModelTag}] Bridge heartbeat restored. Resuming simulation.")
+                self._heartbeat_was_lost = False
+                self._on_bridge_reconnected(CurrentSimNanos, resetClock=True)
+        else:
+            was_lost = self._heartbeat_was_lost
+            healthy = self._check_bridge_health()
+            if healthy and was_lost:
+                self._on_bridge_reconnected(CurrentSimNanos, resetClock=False)
+            if not healthy:
+                return
 
         # Check and retry pending topic requests
         self._check_pending_topics()
@@ -607,17 +629,38 @@ class RosBridgeHandler(sysModel.SysModel):
 
     def _check_bridge_health(self):
         """Check if bridge heartbeat is healthy."""
-        now = time.time()
-        if self.last_heartbeat_time is None or (now - self.last_heartbeat_time > 1.0):
+        if not self._bridge_is_connected():
             if not self._heartbeat_was_lost:
-                print(f"[{self.ModelTag}] No bridge heartbeat for >1s! Pausing UpdateState.")
+                print(f"[{self.ModelTag}] No bridge heartbeat for >1s!")
                 self._heartbeat_was_lost = True
             return False
         else:
             if self._heartbeat_was_lost:
-                print(f"[{self.ModelTag}] Bridge heartbeat restored. Resuming UpdateState.")
+                print(f"[{self.ModelTag}] Bridge heartbeat restored.")
                 self._heartbeat_was_lost = False
             return True
+    
+    def _bridge_is_connected(self):
+        """Check if the bridge is currently connected based on the last heartbeat timestamp."""
+        if self.last_heartbeat_time is None:
+            return False
+        return (time.time() - self.last_heartbeat_time) <= 1.0
+    
+    def _on_bridge_reconnected(self, CurrentSimNanos=None, resetClock=False):
+        """Handle actions needed when the bridge reconnects after a lost connection."""
+        self._log_info(f"[{self.ModelTag}] Bridge reconnected - re-requesting all topics.")
+        self.confirmed_topics.clear()
+        self.pending_topics.clear()
+
+        for reader_info in self.input_msg_readers.values():
+            self._send_topic_request(reader_info['msg_type'], reader_info['topic_name'],
+                                    "out", reader_info['namespace'])
+        for writer_info in self.output_msg_writers.values():
+            self._send_topic_request(writer_info['msg_type'], writer_info['topic_name'],
+                                    "in", writer_info['namespace'])
+
+        if resetClock and self.clockSync is not None and CurrentSimNanos is not None:
+            self.clockSync.Reset(CurrentSimNanos)
             
     def _publish_sim_time(self, CurrentSimNanos):
         """Publish simulation time for ROS2 synchronization."""

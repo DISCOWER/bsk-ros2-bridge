@@ -40,17 +40,23 @@ E. Krantz, N. N. Chan, G. Tibert, H. Mao and C. Fuglesang,
 ### Prerequisites
 
 - [Basilisk](https://avslab.github.io/basilisk/Install.html)
+```bash
+pip install bsk
+```
 - ROS 2 (e.g. [Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html), [Rolling](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html))
 
-If you want to run the MuJoCo example scenario, Basilisk must be built with MuJoCo support:
-```bash
-python3 conanfile.py --mujoco True
-```
-
-After installation of **Basilisk**, it is recommended to export the user path of Basilisk to `.bashrc` as:
-```bash
-export BSK_PATH=your_BSK_path
-```
+> **MuJoCo scenario:** `pip install bsk` does not currently include MuJoCo support. To run the MuJoCo examples in `examples/mujoco/`, [build Basilisk from source](https://avslab.github.io/basilisk/Install.html) with MuJoCo enabled instead:
+> ```bash
+> python3 conanfile.py --mujoco True
+> ```
+> export the user path of Basilisk to `.bashrc` as:
+> ```bash
+> export BSK_PATH=<your-BSK-path>
+> ```
+> and activate that Basilisk environment in the terminal running the MuJoCo scenario:
+> ```bash
+> source $BSK_PATH/.venv/bin/activate
+> ```
 
 In order to visualize the results of the simulations make sure you install [Vizard](https://hanspeterschaub.info/basilisk/Vizard/VizardDownload.html).
 
@@ -58,27 +64,25 @@ In order to visualize the results of the simulations make sure you install [Viza
 
 1. Clone the repos:
 ```bash
-cd <your_ros2_workspace>/src
+cd <your-ros2-workspace>/src
 git clone https://github.com/DISCOWER/bsk-msgs.git
 git clone https://github.com/DISCOWER/bsk-ros2-bridge.git
 ```
 
 2. Install the Basilisk bridge handler module `rosBridgeHandler`:
 ```bash
-# Source your Basilisk environment
-source $BSK_PATH/.venv/bin/activate
 # Navigate to the bridge directory
-cd <your_ros2_workspace>/src/bsk-ros2-bridge
+cd <your-ros2-workspace>/src/bsk-ros2-bridge
 # Install the bridge handler module
 pip install -e .
-# Deactivate your Basilisk environment before step 3
-deactivate
 ```
+
+> If running basilisk with MuJoCo (Basilisk built from source), activate your Basilisk environment (`source $BSK_PATH/.venv/bin/activate`) before this step instead, and `deactivate` it before step 3.
 
 3. Install the ROS 2 bridge package:
 ```bash
 # Navigate to your ROS 2 workspace
-cd <your_ros2_workspace>
+cd <your-ros2-workspace>
 # Install required python packages
 pip install -r src/bsk-ros2-bridge/requirements.txt
 # Build the ROS 2 bridge package and its dependencies
@@ -93,11 +97,12 @@ Terminal 1: Start the bridge
 ros2 launch bsk-ros2-bridge bridge.launch.py
 ```
 
-Terminal 2: Start a Basilisk scenario (requires the BSK environment)
+Terminal 2: Start a Basilisk scenario
 ```bash
-source $BSK_PATH/.venv/bin/activate
 python examples/scenarioRosOrbit_wrench.py
 ```
+
+> For the MuJoCo examples, activate your source-built Basilisk environment first: `source $BSK_PATH/.venv/bin/activate`.
 
 Terminal 3: Verify topics
 ```bash
@@ -131,13 +136,6 @@ ros2 launch bsk-ros2-mpc mpc.launch.py namespace:=bskSat0
 The orbit scenarios support any number of spacecraft. Launch one controller per namespace (e.g., `/bskSat0`, `/bskSat1`).
 
 All spacecraft models used in the scenarios are based on [ATMOS](https://atmos.discower.io/) in terms of size, thruster configuration, and inertia properties.
-
-The MuJoCo example (`mujoco/scenarioRosMujoco_wrench.py`) is a scenario that simulates two satellites on a collision course and uses MuJoCo for multi-joint and contact dynamics. To run this scenario, ensure Basilisk was built with MuJoCo support:
-```bash
-python3 conanfile.py --mujoco True
-```
-
-Just like the other examples, the spacecraft in this MuJoCo scenario are actuated, and can be controlled with, e.g., [bsk-ros2-mpc](https://github.com/DISCOWER/bsk-ros2-mpc).
 
 ## Development Guide
 
@@ -245,6 +243,8 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 | `receive_port` | 5551 | ZMQ port for receiving data from bridge (ROS 2 → BSK) |
 | `heartbeat_port` | 5552 | ZMQ port for heartbeat monitoring |
 | `accelFactor` | NaN | Simulation speed factor; set to enable `/clock` publishing |
+| `requireBridge` | `False` | If `True`, Basilisk waits for the bridge to be reachable before the simulation starts, and waits (blocks) whenever the connection is lost until it's restored |
+| `clockSync` | `None` | Reference to the scenario's `ClockSynch` module. Only used when `requireBridge=True`, to keep simulation playback speed consistent after the bridge connection is restored. |
 
 ## Tested Configurations
 
@@ -260,9 +260,11 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 
 **Missing message types**: ensure `bsk_msgs` is built and sourced.
 
-**Connection issues**: ensure the bridge is running, verify BSK environment is activated.
+**Missing rosBridgeHandler**: ensure you have installed the package (see Installation step 2).
 
-**Missing rosBridgeHandler**: ensure you have installed the package in your BSK environment (see Installation step 2).
+**Basilisk built from source**: if you built Basilisk from source (e.g. for MuJoCo support) rather than via `pip install bsk`, activate its environment (`source <your-basilisk-path>/.venv/bin/activate`) in the terminal running the scenario.
+
+**Ctrl+C won't stop a scenario waiting for bridge connection**: while waiting for the bridge connection, Ctrl+C may not respond. Restart the bridge to resume and exit normally, or run `kill <pid>`.
 
 **Port conflicts**: check with `lsof -i :5550` and kill any processes using the port if needed.
 
