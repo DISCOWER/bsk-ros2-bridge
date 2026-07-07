@@ -170,7 +170,7 @@ This would result in the following ROS 2 publisher and subscriber:
 
 ```python
 # Publisher: Sends Basilisk data to ROS 2
-ros_bridge.add_ros_publisher(msg_type_name, handler_name, topic_name, namespace, max_rate=None)
+ros_bridge.add_ros_publisher(msg_type_name, handler_name, topic_name, namespace, max_rate=None, rate_is_real_time=False)
 
 # Subscriber: Receives ROS 2 commands in Basilisk
 ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace)
@@ -182,13 +182,14 @@ ros_bridge.add_ros_subscriber(msg_type_name, handler_name, topic_name, namespace
 - `topic_name` - ROS 2 topic name (e.g., `'sc_states'`, `'cmd_force'`)
 - `namespace` - Spacecraft identifier (e.g., `'bskSat'`, `'bskSat0'`)
 - `max_rate` - (Publishers only) optional maximum publishing rate (Hz). If not specified, publishes at the task rate.
+- `rate_is_real_time` - (Publishers only) if `True`, `max_rate` is a real-world (wall-clock) Hz even if `accelFactor` changes at runtime. If `False` (default), `max_rate` is a simulated-time Hz, so the effective real-world publish rate scales with `accelFactor`.
 
 ### Topic Structure
 
 Topics follow the pattern: `/<namespace>/bsk/<in|out>/<topic_name>`
 
 **Common Topics:**
-- `/clock` - Simulation time synchronization (only in non-realtime mode)
+- `/clock` - Simulation time synchronization (if `publish_clock` is enabled)
 - `/<namespace>/bsk/out/sc_states` - Spacecraft states  
 - `/<namespace>/bsk/in/thr_array_cmd_force` - Thruster commands
 - `/<namespace>/bsk/in/cmd_force` - Force commands
@@ -196,11 +197,10 @@ Topics follow the pattern: `/<namespace>/bsk/<in|out>/<topic_name>`
 
 ### Time Synchronization
 
-In non-realtime mode (`accelFactor is not 1`), the bridge publishes simulation time to `/clock`. For time synchronization, ROS 2 nodes must use `use_sim_time:=true` in this case. In realtime mode, `/clock` is not published and nodes use system time.
+If `publish_clock` is enabled (default: `True`), the bridge publishes `/clock` at a fixed real-world rate set by `clock_rate`, independent of `accelFactor`. ROS 2 nodes should use `use_sim_time:=true` to follow simulated time. Set `publish_clock:=false` to disable `/clock` entirely and have nodes use system time instead.
 
-The clock update interval can be configured via the `clock_timestep`:
 ```bash
-ros2 launch bsk-ros2-bridge bridge.launch.py clock_timestep:=0.1
+ros2 launch bsk-ros2-bridge bridge.launch.py publish_clock:=true clock_rate:=1000.0
 ```
 
 ### QoS Settings
@@ -222,7 +222,8 @@ This configuration prioritizes low-latency communication and ensures that only t
 | `pub_port` | 5550 | ZMQ port: Basilisk → Bridge |
 | `sub_port` | 5551 | ZMQ port: Bridge → Basilisk |
 | `heartbeat_port` | 5552 | ZMQ heartbeat port |
-| `clock_timestep` | 0.01 | Clock update interval (s) |
+| `publish_clock` | `True` | Whether to publish `/clock` |
+| `clock_rate` | 1000.0 | `/clock` publish rate (Hz, real/wall-clock time) |
 | `namespace` | `''` | Bridge namespace |
 
 To set custom ports:
@@ -242,7 +243,7 @@ ros_bridge = RosBridgeHandler(send_port=6550, receive_port=6551, heartbeat_port=
 | `send_port` | 5550 | ZMQ port for sending data to bridge (BSK → ROS 2) |
 | `receive_port` | 5551 | ZMQ port for receiving data from bridge (ROS 2 → BSK) |
 | `heartbeat_port` | 5552 | ZMQ port for heartbeat monitoring |
-| `accelFactor` | NaN | Simulation speed factor; set to enable `/clock` publishing |
+| `accelFactor` | 1.0 | Simulation speed factor, used to scale `/clock` time and `rate_is_real_time` publishers |
 | `requireBridge` | `False` | If `True`, Basilisk waits for the bridge to be reachable before the simulation starts, and waits (blocks) whenever the connection is lost until it's restored |
 | `clockSync` | `None` | Reference to the scenario's `ClockSynch` module. Only used when `requireBridge=True`, to keep simulation playback speed consistent after the bridge connection is restored. |
 

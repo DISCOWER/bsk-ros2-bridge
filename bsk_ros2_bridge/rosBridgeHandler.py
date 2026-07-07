@@ -235,32 +235,30 @@ class RosBridgeHandler(sysModel.SysModel):
         while self.last_heartbeat_time is None:
             time.sleep(0.01)
         
-        # Only send clock reset if not running in realtime (accelFactor is not NaN and not close to 1.0)
-        if not np.isnan(self.accelFactor) and not np.isclose(self.accelFactor, 1.0, rtol=1e-6):
-            # Send reset signal to bridge
-            reset_msg = {
-                "clock_reset": True,
-                "sim_time": 0.0,
-                "accelFactor": self.accelFactor
-            }
-            clock_reset = False
-            
-            print(f"[{self.ModelTag}] Waiting for clock reset acknowledgement...")
-            
-            while not clock_reset:
-                try:
-                    # Send reset request
-                    self.send_socket.send(json_dumps(reset_msg), flags=zmq.NOBLOCK)
-                    msg = json_loads(self.receive_socket.recv())
-                    if msg.get('clock_reset_ack', False):
-                        clock_reset = True
-                        print(f"[{self.ModelTag}] Bridge clock reset acknowledged")
-                except zmq.Again:
-                    # Retry if no message received within timeout
-                    time.sleep(0.5)
-                except Exception as e:
-                    print(f"[{self.ModelTag}] Error during clock reset: {e}")
-                    time.sleep(0.5)
+        # Send reset signal to bridge
+        reset_msg = {
+            "clock_reset": True,
+            "sim_time": 0.0,
+            "accelFactor": self.accelFactor
+        }
+        clock_reset = False
+        
+        print(f"[{self.ModelTag}] Waiting for clock reset acknowledgement...")
+        
+        while not clock_reset:
+            try:
+                # Send reset request
+                self.send_socket.send(json_dumps(reset_msg), flags=zmq.NOBLOCK)
+                msg = json_loads(self.receive_socket.recv())
+                if msg.get('clock_reset_ack', False):
+                    clock_reset = True
+                    print(f"[{self.ModelTag}] Bridge clock reset acknowledged")
+            except zmq.Again:
+                # Retry if no message received within timeout
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"[{self.ModelTag}] Error during clock reset: {e}")
+                time.sleep(0.5)
         
         print(f"[{self.ModelTag}] Bridge heartbeat detected. Module ready.")
 
@@ -268,7 +266,8 @@ class RosBridgeHandler(sysModel.SysModel):
     # SET UP MESSAGE HANDLING
     # =========================================================================
 
-    def add_ros_publisher(self, msg_type_name, handler_name, topic_name, namespace, max_rate=None):
+    def add_ros_publisher(self, msg_type_name, handler_name, topic_name, namespace,
+                          max_rate=None, rate_is_real_time=False):
         """
         Add BSK message handler for publishing data to ROS2 (BSK -> ROS2).
         
@@ -278,6 +277,7 @@ class RosBridgeHandler(sysModel.SysModel):
             topic_name (str): Topic name (e.g., 'imu_1', 'imu_2')
             namespace (str): Namespace for this specific handler (e.g., 'spacecraft_1')
             max_rate (float, optional): Maximum publishing rate (Hz). If None, publishes at task rate.
+            rate_is_real_time (bool): If True (default), max_rate is a REAL-WORLD (wall-clock) Hz.
         """
         if msg_type_name not in self.bsk_msg_types:
             self._log_error(f"Unknown BSK message type: {msg_type_name}")
@@ -294,17 +294,13 @@ class RosBridgeHandler(sysModel.SysModel):
         # Store handler configuration
         unique_handler_key = f"{namespace}_{handler_name}"
         
-        # Calculate minimum interval (nanoseconds) if rate limiting is enabled
-        min_interval = None
-        if max_rate is not None and max_rate > 0:
-            min_interval = int(1e9 / max_rate)  # Convert Hz to nanoseconds
-        
         self.input_msg_readers[unique_handler_key] = {
             'reader': handler,
             'msg_type': msg_type_name,
             'topic_name': topic_name,
             'namespace': namespace,
-            'min_interval': min_interval,  # Nanoseconds
+            'max_rate': max_rate,
+            'rate_is_real_time': rate_is_real_time,
             'next_publish_time': 0  # Nanoseconds
         }
         
@@ -605,20 +601,24 @@ class RosBridgeHandler(sysModel.SysModel):
         # Process all input message readers and publish to ROS2
         for reader_name, reader_info in self.input_msg_readers.items():
             if reader_info['reader'].isLinked() and reader_info['reader'].isWritten():
-                # Check rate limiting if enabled
-                if reader_info.get('min_interval') is not None:
+                max_rate = reader_info.get('max_rate')
+                min_interval = None
+                if max_rate is not None and max_rate > 0:
+                    if reader_info.get('rate_is_real_time', True):
+                        effective_accel = self.accelFactor if np.isfinite(self.accelFactor) else 1.0
+                        min_interval = int(1e9 * effective_accel / max_rate)
+                    else:
+                        min_interval = int(1e9 / max_rate)
                     if CurrentSimNanos < reader_info['next_publish_time']:
-                        continue  # Skip this publish, scheduled time not yet reached
-                
+                        continue
+
                 msg_payload = reader_info['reader']()
                 self._publish_bsk_message(CurrentSimNanos, msg_payload, reader_info['msg_type'], reader_info['namespace'])
 
-                # Advance next publish time by the fixed interval from the scheduled time
-                if reader_info.get('min_interval') is not None:
-                    reader_info['next_publish_time'] += reader_info['min_interval']
-                    # Guard against falling behind
+                if min_interval is not None:
+                    reader_info['next_publish_time'] += min_interval
                     if reader_info['next_publish_time'] <= CurrentSimNanos:
-                        reader_info['next_publish_time'] = CurrentSimNanos + reader_info['min_interval']
+                        reader_info['next_publish_time'] = CurrentSimNanos + min_interval
 
         # Receive and process commands from ROS2
         self._receive_ros_message(CurrentSimNanos)
@@ -664,13 +664,12 @@ class RosBridgeHandler(sysModel.SysModel):
             
     def _publish_sim_time(self, CurrentSimNanos):
         """Publish simulation time for ROS2 synchronization."""
-        # Only publish sim_time if not running in realtime (accelFactor is not NaN and not close to 1.0)
-        if not np.isnan(self.accelFactor) and not np.isclose(self.accelFactor, 1.0, rtol=1e-6):
-            try:
-                self._sim_time_msg_template["sim_time"] = float(CurrentSimNanos) * 1e-9
-                self.send_socket.send(json_dumps(self._sim_time_msg_template), flags=zmq.NOBLOCK)
-            except Exception as e:
-                self._log_error(f"Error publishing sim_time: {e}")
+        try:
+            self._sim_time_msg_template["sim_time"] = float(CurrentSimNanos) * 1e-9
+            self._sim_time_msg_template["accelFactor"] = self.accelFactor
+            self.send_socket.send(json_dumps(self._sim_time_msg_template), flags=zmq.NOBLOCK)
+        except Exception as e:
+            self._log_error(f"Error publishing sim_time: {e}")
 
     def _publish_bsk_message(self, CurrentSimNanos, msg_payload, msg_type_name, namespace):
         """Publish BSK message data to ROS2 via bridge."""

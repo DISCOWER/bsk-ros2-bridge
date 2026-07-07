@@ -36,11 +36,16 @@ def generate_launch_description():
         description='ZMQ heartbeat port for connection monitoring'
     )
 
-    # Configure ROS clock update resolution
-    ros_clock_timestep_arg = DeclareLaunchArgument(
-        'clock_timestep',
-        default_value='0.01',
-        description='ROS clock update interval in seconds'
+    publish_clock_arg = DeclareLaunchArgument(
+        'publish_clock',
+        default_value='True',
+        description='Whether to publish /clock at all'
+    )
+
+    clock_rate_arg = DeclareLaunchArgument(
+        'clock_rate',
+        default_value='1000.0',
+        description='Rate (Hz, real/wall-clock time) at which /clock is published, independent of simulation speed'
     )
 
     # Main bridge node - handles all BSK<->ROS2 message translation
@@ -54,7 +59,8 @@ def generate_launch_description():
             'pub_port': LaunchConfiguration('pub_port'),
             'sub_port': LaunchConfiguration('sub_port'), 
             'heartbeat_port': LaunchConfiguration('heartbeat_port'),
-            'ros_clock_timestep': LaunchConfiguration('clock_timestep')
+            'publish_clock': LaunchConfiguration('publish_clock'),
+            'clock_rate': LaunchConfiguration('clock_rate')
         }]
     )
 
@@ -63,6 +69,7 @@ def generate_launch_description():
         pub_port_arg,
         sub_port_arg, 
         heartbeat_port_arg,
-        ros_clock_timestep_arg,
+        publish_clock_arg,
+        clock_rate_arg,
         bridge_node
     ])

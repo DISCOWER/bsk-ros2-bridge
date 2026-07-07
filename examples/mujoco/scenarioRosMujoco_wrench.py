@@ -325,13 +325,6 @@ def run(liveStream=False, broadcastStream=False, simTime=60.0, simRate=100.0, th
     scSim.ConfigureStopTime(simTimeStep)
     scSim.ExecuteSimulation()
 
-    # Send Basilisk thruster outputs to MuJoCo actuators
-    # for i in range(num_spacecraft):
-    #     for j in range(len(thruster_defs)):
-    #         thr_output = thrusterSet[i].thrusterOutMsgs[j].read()
-    #         thrust = max(0.0, thr_output.thrustForce)
-    #         thrusterActuatorMsgs[i][j].write(messaging.SingleActuatorMsgPayload(input=thrust))
-    
     # Main simulation loop with MuJoCo thruster control
     incrementalStopTime = simTimeStep
     while incrementalStopTime < macros.sec2nano(simTime):
