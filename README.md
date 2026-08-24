@@ -41,7 +41,7 @@ E. Krantz, N. N. Chan, G. Tibert, H. Mao and C. Fuglesang,
 
 - [Basilisk](https://avslab.github.io/basilisk/Install.html)
 ```bash
-pip install bsk
+pip install "bsk[all]"
 ```
 - ROS 2 (e.g. [Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html), [Rolling](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html))
 
@@ -61,6 +61,8 @@ pip install bsk
 In order to visualize the results of the simulations make sure you install [Vizard](https://hanspeterschaub.info/basilisk/Vizard/VizardDownload.html).
 
 ### Install
+
+**Ubuntu 24.04, not using a virtual environment:** run `export PIP_BREAK_SYSTEM_PACKAGES=1` first (24.04 blocks system-wide pip installs). Run `unset PIP_BREAK_SYSTEM_PACKAGES` when you're done installing.
 
 1. Clone the repos:
 ```bash
@@ -83,8 +85,9 @@ pip install -e .
 ```bash
 # Navigate to your ROS 2 workspace
 cd <your-ros2-workspace>
-# Install required python packages
-pip install -r src/bsk-ros2-bridge/requirements.txt
+# Install dependencies declared in package.xml
+rosdep update
+rosdep install --from-paths src --ignore-src -y
 # Build the ROS 2 bridge package and its dependencies
 colcon build --packages-up-to bsk-ros2-bridge
 source install/setup.bash
@@ -99,7 +102,7 @@ ros2 launch bsk-ros2-bridge bridge.launch.py
 
 Terminal 2: Start a Basilisk scenario
 ```bash
-python examples/scenarioRosOrbit_wrench.py
+python3 examples/scenarioRosOrbit_wrench.py
 ```
 
 > For the MuJoCo examples, activate your source-built Basilisk environment first: `source $BSK_PATH/.venv/bin/activate`.

@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -60,7 +61,7 @@ def generate_launch_description():
             'sub_port': LaunchConfiguration('sub_port'), 
             'heartbeat_port': LaunchConfiguration('heartbeat_port'),
             'publish_clock': LaunchConfiguration('publish_clock'),
-            'clock_rate': LaunchConfiguration('clock_rate')
+            'clock_rate': ParameterValue(LaunchConfiguration('clock_rate'), value_type=float),
         }]
     )
 

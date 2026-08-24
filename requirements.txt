@@ -1,3 +1,0 @@
-orjson>=3.8.0
-pyzmq>=24.0.0
-pytest>=7.0.0
