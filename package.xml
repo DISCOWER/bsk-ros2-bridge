@@ -1,17 +1,22 @@
 <?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>bsk-ros2-bridge</name>
   <version>1.0.0</version>
   <description>ROS 2 Bridge for Basilisk Astrodynamics Framework</description>
   <maintainer email="eliaskra@kth.se">Elias Krantz</maintainer>
-  <license>BSD-3</license>
+  <license>BSD-3-Clause</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
+  <buildtool_depend>python3-setuptools</buildtool_depend>
+
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>launch</exec_depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>bsk_msgs</exec_depend>
-  <exec_depend>pyzmq</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-zmq</exec_depend>
   <exec_depend>python3-orjson</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
