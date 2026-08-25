@@ -58,11 +58,11 @@ pip install "bsk[all]"
 > source $BSK_PATH/.venv/bin/activate
 > ```
 
-In order to visualize the results of the simulations make sure you install [Vizard](https://hanspeterschaub.info/basilisk/Vizard/VizardDownload.html).
+In order to visualize the results of the simulations, make sure you install [Vizard](https://hanspeterschaub.info/basilisk/Vizard/VizardDownload.html).
 
 ### Install
 
-**Ubuntu 24.04, not using a virtual environment:** run `export PIP_BREAK_SYSTEM_PACKAGES=1` first (24.04 blocks system-wide pip installs). Run `unset PIP_BREAK_SYSTEM_PACKAGES` when you're done installing.
+> If running Ubuntu 24.04 without a virtual Python environment: run `export PIP_BREAK_SYSTEM_PACKAGES=1` first (24.04 blocks system-wide pip installs). Run `unset PIP_BREAK_SYSTEM_PACKAGES` when you're done installing.
 
 1. Clone the repos:
 ```bash
