@@ -496,7 +496,14 @@ class RosBridgeHandler(sysModel.SysModel):
                 elif hasattr(attr_value, 'tolist'):
                     json_data[attr_name.lower()] = attr_value.tolist()
                 elif isinstance(attr_value, (list, tuple)):
-                    json_data[attr_name.lower()] = list(attr_value)
+                    if attr_value and hasattr(attr_value[0], 'thisown'):
+                        # Nested message payloads
+                        json_data[attr_name.lower()] = [self._bsk_msg_to_json(v, type(v).__name__) for v in attr_value]
+                    elif attr_value and isinstance(attr_value[0], (list, tuple)):
+                        # Flatten multi-dimensional arrays
+                        json_data[attr_name.lower()] = np.ravel(attr_value).tolist()
+                    else:
+                        json_data[attr_name.lower()] = list(attr_value)
             except Exception:
                 continue
 
@@ -538,6 +545,16 @@ class RosBridgeHandler(sysModel.SysModel):
                         attr_array = np.array(attr_value, dtype=current_value.dtype)
                         attr_array.shape = current_value.shape
                         setattr(msg_payload, bsk_field_name, attr_array)
+                    elif isinstance(attr_value, list) and attr_value and isinstance(attr_value[0], dict):
+                        # Nested message payloads
+                        nested_type_name = type(current_value[0]).__name__
+                        setattr(msg_payload, bsk_field_name,
+                                [self._json_to_bsk_msg(v, nested_type_name) for v in attr_value])
+                    elif (isinstance(current_value, (list, tuple)) and current_value
+                          and isinstance(current_value[0], (list, tuple))):
+                        # Restore shape of multi-dimensional arrays
+                        attr_array = np.reshape(attr_value, (-1,) + np.shape(current_value)[1:])
+                        setattr(msg_payload, bsk_field_name, attr_array.tolist())
                     else:
                         setattr(msg_payload, bsk_field_name, attr_value)
                 except Exception:

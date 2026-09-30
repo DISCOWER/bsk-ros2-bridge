@@ -253,6 +253,10 @@ class BskRosBridge(Node):
                 # Handle array fields
                 if attr_spec.startswith('float64[') and isinstance(field_value, list):
                     setattr(msg, ros_field_name, [float(x) for x in field_value])
+                # Handle nested message arrays
+                elif attr_spec.startswith('bsk_msgs/') and isinstance(field_value, list):
+                    nested_type = getattr(bsk_msgs, attr_spec.split('/')[1].split('[')[0])
+                    setattr(msg, ros_field_name, [self._json_to_bsk_msg(v, nested_type) for v in field_value])
                 else:
                     setattr(msg, ros_field_name, field_value)
         return msg
@@ -269,6 +273,8 @@ class BskRosBridge(Node):
                 json_data[field_name] = {'sec': int(field_value.sec), 'nanosec': int(field_value.nanosec)}
             elif hasattr(field_value, 'tolist'):
                 json_data[field_name] = field_value.tolist()
+            elif isinstance(field_value, list) and field_value and hasattr(field_value[0], 'get_fields_and_field_types'):
+                json_data[field_name] = [self._bsk_msg_to_json(v) for v in field_value]
             else:
                 json_data[field_name] = field_value
         
