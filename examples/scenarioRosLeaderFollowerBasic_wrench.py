@@ -1,5 +1,6 @@
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch
-from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster
+from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, simIncludeThruster
+from Basilisk.utilities.simHelpers import np2EigenMatrix3d
 from Basilisk.fswAlgorithms import thrFiringSchmitt
 from Basilisk.architecture import bskLogging, sysModel, messaging
 from bsk_ros2_bridge import RosBridgeHandler
@@ -72,7 +73,7 @@ def run(liveStream=False, broadcastStream=False, simTime=60.0, simRate=100.0, th
         scObject_i.ModelTag = scName[i]
         scObject.append(scObject_i)
         scObject_i.hub.mHub = m
-        scObject_i.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
+        scObject_i.hub.IHubPntBc_B = np2EigenMatrix3d(I)
         scObject_i.hub.r_CN_NInit = relative_positions[i]  # m
         scObject_i.hub.v_CN_NInit = [0, 0, 0]  # m/s
         

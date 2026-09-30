@@ -1,5 +1,6 @@
 from Basilisk.simulation import spacecraft, thrusterDynamicEffector, simSynch, simpleNav
-from Basilisk.utilities import SimulationBaseClass, macros, unitTestSupport, vizSupport, simIncludeThruster, simIncludeGravBody, orbitalMotion
+from Basilisk.utilities import SimulationBaseClass, macros, vizSupport, simIncludeThruster, simIncludeGravBody, orbitalMotion
+from Basilisk.utilities.simHelpers import np2EigenMatrix3d
 from Basilisk.fswAlgorithms import thrFiringSchmitt, hillStateConverter, hillPoint, attTrackingError
 from Basilisk.architecture import bskLogging, sysModel, messaging
 from bsk_ros2_bridge import RosBridgeHandler
@@ -109,7 +110,7 @@ def run(liveStream=False, broadcastStream=False, simTime=60.0, simRate=100.0, th
         scObject.append(scObject_i)
         gravFactory.addBodiesTo(scObject_i)
         scObject_i.hub.mHub = m
-        scObject_i.hub.IHubPntBc_B = unitTestSupport.np2EigenMatrix3d(I)
+        scObject_i.hub.IHubPntBc_B = np2EigenMatrix3d(I)
         r, v = get_initial_conditions_from_hill(mu, rN, vN, relative_positions[i], [0, 0, 0])
         scObject_i.hub.r_CN_NInit = r
         scObject_i.hub.v_CN_NInit = v

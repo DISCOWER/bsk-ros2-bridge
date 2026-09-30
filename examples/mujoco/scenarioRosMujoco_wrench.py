@@ -291,13 +291,10 @@ def run(liveStream=False, broadcastStream=False, simTime=60.0, simRate=100.0, th
     
     # --- Set up Vizard support ---
     if vizSupport.vizFound:       
-        vizScList = [scHillObj] + [
-            [f"bskSat{i}", mjBodies[i].getOrigin().stateOutMsg] for i in range(num_spacecraft)
-        ]
         viz = vizSupport.enableUnityVisualization(
             scSim,
             vizTaskName,
-            vizScList,
+            [scHillObj, scene],
             liveStream=liveStream,
             broadcastStream=broadcastStream,
         )
