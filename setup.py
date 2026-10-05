@@ -7,7 +7,7 @@ package_dir = 'bsk_ros2_bridge'
 
 setup(
     name=package_name,
-    version='1.0.0',
+    version='1.2.0',
     packages=[
         package_dir,
         f'{package_dir}.modules',

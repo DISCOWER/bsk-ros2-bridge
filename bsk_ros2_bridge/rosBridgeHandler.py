@@ -242,9 +242,9 @@ class RosBridgeHandler(sysModel.SysModel):
             "accelFactor": self.accelFactor
         }
         clock_reset = False
-        
+
         print(f"[{self.ModelTag}] Waiting for clock reset acknowledgement...")
-        
+
         while not clock_reset:
             try:
                 # Send reset request
