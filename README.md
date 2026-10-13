@@ -2,7 +2,9 @@
 
 A lightweight, open-source communication bridge between the Basilisk astrodynamics simulation framework and ROS 2, enabling real-time, bidirectional data exchange.
 
-![bsk_bridge_rviz_demo_compressed](https://github.com/user-attachments/assets/11cca7af-d8b4-443f-aed6-494e996d0d6c)
+<p align="center">
+  <img width="860" alt="Three cubesats controlled through Space ROS" src="https://github.com/user-attachments/assets/bcfd9ff7-8a11-4fb5-8fb5-40754d853605" />
+</p>
 
 This repository provides a ROS 2 interface for the [Basilisk astrodynamics framework](https://hanspeterschaub.info/basilisk/) that enables spacecraft simulations to interact directly with ROS 2 nodes without requiring any modifications to Basilisk's core. The bridge connects Basilisk's high-fidelity spacecraft dynamics and simulation timing with ROS 2's distributed middleware.
 
